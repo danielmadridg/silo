@@ -1,0 +1,27 @@
+# Python backend
+backend/.venv/
+backend/__pycache__/
+backend/routers/__pycache__/
+*.pyc
+*.pyo
+
+# Node / Extension
+extension/node_modules/
+extension/out/
+extension/silo-*.vsix
+
+# Build artifacts
+*.vsix
+build_log.txt
+llama_install.log
+llama_install_err.log
+env_check.log
+
+# Scripts temporales
+install_llama.ps1
+check_env.ps1
+check_and_save_env.ps1
+run_install.bat
+
+# DB
+*.db

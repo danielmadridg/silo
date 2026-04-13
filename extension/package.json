@@ -1,0 +1,53 @@
+{
+  "name": "silo",
+  "displayName": "Silo — Local AI Coding Assistant",
+  "description": "Claude Code equivalent powered by local LLM (Qwen2.5-Coder)",
+  "version": "1.0.0",
+  "publisher": "danielmadridg",
+  "repository": { "type": "git", "url": "https://github.com/danielmadridg/silo" },
+  "icon": "silologo.png",
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["AI", "Programming Languages", "Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "silo.openChat", "title": "Silo: Open Chat" },
+      { "command": "silo.analyzeFile", "title": "Silo: Analyze Current File" },
+      { "command": "silo.refactorSelection", "title": "Silo: Refactor Selection" },
+      { "command": "silo.explainSelection", "title": "Silo: Explain Selection" }
+    ],
+    "menus": {
+      "editor/context": [
+        { "command": "silo.refactorSelection", "when": "editorHasSelection", "group": "silo" },
+        { "command": "silo.explainSelection", "when": "editorHasSelection", "group": "silo" }
+      ]
+    },
+    "configuration": {
+      "title": "Silo",
+      "properties": {
+        "silo.backendUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8942",
+          "description": "Silo backend URL"
+        },
+        "silo.contextFiles": {
+          "type": "number",
+          "default": 5,
+          "description": "Number of open files to include in context"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.90.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0",
+    "@vscode/vsce": "^2.26.0"
+  }
+}

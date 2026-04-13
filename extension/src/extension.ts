@@ -1,0 +1,59 @@
+import * as vscode from 'vscode';
+import { ChatPanel } from './panels/ChatPanel';
+import { getSelectedText } from './contextCollector';
+import { streamRefactor } from './backend';
+import { SiloCompletionProvider } from './completionProvider';
+
+export function activate(context: vscode.ExtensionContext) {
+  context.subscriptions.push(
+    vscode.commands.registerCommand('silo.openChat', () => {
+      ChatPanel.createOrShow(context.extensionUri);
+    }),
+
+    vscode.commands.registerCommand('silo.analyzeFile', () => {
+      ChatPanel.createOrShow(context.extensionUri);
+      setTimeout(() => ChatPanel.currentPanel?.handleAnalyze(), 500);
+    }),
+
+    vscode.commands.registerCommand('silo.refactorSelection', async () => {
+      const editor = vscode.window.activeTextEditor;
+      const selected = getSelectedText();
+      if (!selected || !editor) {
+        return vscode.window.showWarningMessage('Silo: No text selected');
+      }
+
+      const instruction = await vscode.window.showInputBox({
+        prompt: 'Refactoring instruction',
+        placeHolder: 'e.g. Convert to async/await, add type hints, optimize performance...'
+      });
+      if (!instruction) return;
+
+      let refactored = '';
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'Silo: Refactoring...', cancellable: false },
+        async () => {
+          await streamRefactor(selected, instruction, editor.document.languageId, t => { refactored += t; });
+        }
+      );
+
+      await editor.edit(eb => eb.replace(editor.selection, refactored.trim()));
+    }),
+
+    vscode.commands.registerCommand('silo.explainSelection', async () => {
+      const selected = getSelectedText();
+      if (!selected) {
+        return vscode.window.showWarningMessage('Silo: No text selected');
+      }
+      ChatPanel.createOrShow(context.extensionUri);
+      await new Promise(r => setTimeout(r, 300));
+      ChatPanel.currentPanel?.sendExternalMessage(`Explain this code:\n\`\`\`\n${selected}\n\`\`\``);
+    }),
+
+    vscode.languages.registerInlineCompletionItemProvider(
+      { pattern: '**' },
+      new SiloCompletionProvider()
+    )
+  );
+}
+
+export function deactivate() {}

@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+sse-starlette
+pydantic
+tiktoken
+aiofiles
+huggingface-hub
+# Install separately with CUDA support:
+# CMAKE_ARGS="-DGGML_CUDA=on -DGGML_CUDA_F16=on" FORCE_CMAKE=1 pip install llama-cpp-python --no-cache-dir
