@@ -2,7 +2,7 @@
   "name": "silo-local-ai",
   "displayName": "Silo — Local AI Coding Assistant",
   "description": "Claude Code equivalent powered by local LLM (Qwen2.5-Coder)",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "danielmadridg",
   "repository": { "type": "git", "url": "https://github.com/danielmadridg/silo" },
   "icon": "silologo.png",
