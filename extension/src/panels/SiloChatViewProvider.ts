@@ -3,9 +3,9 @@ import { streamChat, streamAnalysis } from '../backend';
 import { collectProjectContext, getActiveFileInfo } from '../contextCollector';
 
 const MODELS = [
-  { id: 'llama3.2:3b',      label: 'Llama 3.2',       company: 'Meta',     logoFile: 'ollama.svg',   tier: 'Fast'     },
-  { id: 'qwen2.5-coder:7b', label: 'Qwen 2.5 Coder',  company: 'Alibaba',  logoFile: 'qwen.svg',     tier: 'Balanced' },
   { id: 'deepseek-r1:7b',   label: 'DeepSeek R1',     company: 'DeepSeek', logoFile: 'deepseek.svg', tier: 'Advanced' },
+  { id: 'qwen2.5-coder:7b', label: 'Qwen 2.5 Coder',  company: 'Alibaba',  logoFile: 'qwen.svg',     tier: 'Balanced' },
+  { id: 'llama3.2:3b',      label: 'Llama 3.2',       company: 'Meta',     logoFile: 'ollama.svg',   tier: 'Fast'     },
 ];
 
 interface Chat {
@@ -18,16 +18,142 @@ interface Chat {
 export class SiloChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'silo.chatView';
   private _view?: vscode.WebviewView;
-  private _currentModel = 'llama3.2:3b';
-  private _fileIncluded = true;
-  private _currentChatId: string | null = null;
-  private _isStreaming = false;
-  private _abortController: AbortController | null = null;
+  private _currentModel = 'deepseek-r1:7b';
+  // Sidebar-only state
+  private _sidebarChatId: string | null = null;
+  private _sidebarStreaming = false;
+  private _sidebarAbort: AbortController | null = null;
+  private _sidebarFileIncluded = true;
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
     private readonly _context: vscode.ExtensionContext
   ) {}
+
+  // ── Sidebar post ──────────────────────────────────────────────
+  private post(msg: any) {
+    this._view?.webview.postMessage(msg);
+  }
+
+  // ── Standalone panel (new VS Code tab each time) ──────────────
+  public createOrShow() {
+    // Each call opens a brand-new VS Code editor tab
+    let chatId: string | null = null;
+    let isStreaming = false;
+    let abortCtrl: AbortController | null = null;
+    let fileIncluded = true;
+    let turboMode = false;
+
+    const panel = vscode.window.createWebviewPanel(
+      'silo.chatView', 'Silo',
+      { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
+      { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(this._extensionUri, 'media')] }
+    );
+    panel.iconPath = vscode.Uri.joinPath(this._extensionUri, 'media', 'silologonobg.svg');
+    panel.webview.html = this.getHtml(panel.webview);
+
+    const post = (msg: any) => panel.webview.postMessage(msg);
+
+    const pushFile = () => {
+      const editor = vscode.window.activeTextEditor;
+      const filename = editor ? vscode.workspace.asRelativePath(editor.document.fileName) : null;
+      post({ type: 'fileState', filename, included: fileIncluded });
+    };
+
+    const sendHist = () => {
+      const chats = this.getChats().map(c => ({
+        id: c.id, title: c.title, createdAt: c.createdAt,
+        preview: c.history.find(m => m.role === 'user')?.content?.slice(0, 60) ?? 'Empty chat'
+      }));
+      post({ type: 'history', chats, currentId: chatId });
+    };
+
+    panel.webview.onDidReceiveMessage(async (msg) => {
+      switch (msg.type) {
+        case 'init': {
+          const c = this.makeChat();
+          chatId = c.id;
+          panel.title = c.title;
+          post({ type: 'loadMessages', history: [], title: c.title, id: c.id });
+          const modelsWithUris = MODELS.map(m => ({
+            ...m,
+            logoUri: panel.webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', m.logoFile)).toString()
+          }));
+          post({ type: 'models', models: modelsWithUris, current: this._currentModel });
+          pushFile();
+          break;
+        }
+        case 'chat': {
+          if (isStreaming) return;
+          let chat = this.getChats().find(c => c.id === chatId);
+          if (!chat) { chat = this.makeChat(); chatId = chat.id; }
+          const fileCtx = fileIncluded ? await collectProjectContext() : '';
+          chat.history.push({ role: 'user', content: msg.text });
+          if (chat.title === 'New chat' && msg.text) {
+            chat.title = msg.text.slice(0, 40) + (msg.text.length > 40 ? '…' : '');
+            panel.title = chat.title;
+            post({ type: 'chatRenamed', id: chat.id, title: chat.title });
+          }
+          this.upsertChat(chat);
+          isStreaming = true;
+          abortCtrl = new AbortController();
+          post({ type: 'start' });
+          let full = ''; let stopped = false;
+          try {
+            await streamChat(msg.text, chat.history.slice(0, -1), fileCtx, t => { full += t; post({ type: 'token', token: t }); }, abortCtrl.signal);
+          } catch (e: any) {
+            if (e?.name === 'AbortError' || abortCtrl?.signal.aborted) { stopped = true; }
+            else {
+              post({ type: 'error', message: e?.message?.includes('fetch') || e?.code === 'ECONNREFUSED'
+                ? 'Cannot connect to Silo backend. Is it running on port 8942?' : `Error: ${e?.message ?? 'Unknown error'}` });
+            }
+          }
+          isStreaming = false; abortCtrl = null;
+          if (stopped) post({ type: 'stopped' }); else if (full) post({ type: 'done' });
+          if (full) { chat.history.push({ role: 'assistant', content: full }); this.upsertChat(chat); }
+          break;
+        }
+        case 'stop': { if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; } isStreaming = false; break; }
+        case 'newChat': { this.createOrShow(); break; }
+        case 'loadChat': {
+          const c = this.getChats().find(c => c.id === msg.id);
+          if (!c) break;
+          chatId = c.id; panel.title = c.title;
+          post({ type: 'loadMessages', history: c.history, title: c.title, id: c.id });
+          break;
+        }
+        case 'deleteChat': {
+          const chats = this.getChats().filter(c => c.id !== msg.id);
+          this.saveChats(chats);
+          if (chatId === msg.id) { chatId = chats[0]?.id ?? null; }
+          sendHist();
+          break;
+        }
+        case 'getHistory': sendHist(); break;
+        case 'renameChat': {
+          const chats = this.getChats();
+          const c = chats.find(c => c.id === msg.id);
+          if (!c) break;
+          c.title = msg.title?.trim() || 'New chat';
+          this.saveChats(chats);
+          if (msg.id === chatId) panel.title = c.title;
+          post({ type: 'chatRenamed', id: msg.id, title: c.title });
+          break;
+        }
+        case 'toggleFile': { fileIncluded = !fileIncluded; pushFile(); break; }
+        case 'setModel': { this._currentModel = msg.model; this.updateBackendModel(msg.model); break; }
+        case 'setTurbo': { turboMode = msg.enabled; break; }
+        case 'searchWeb': {
+          const query = encodeURIComponent(msg.query || '');
+          if (query) vscode.env.openExternal(vscode.Uri.parse(`https://duckduckgo.com/?q=${query}`));
+          break;
+        }
+      }
+    });
+
+    vscode.window.onDidChangeActiveTextEditor(pushFile);
+    panel.onDidDispose(() => {});
+  }
 
   // ── Chat persistence ──────────────────────────────────────────
   private getChats(): Chat[] {
@@ -36,22 +162,53 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
   private saveChats(chats: Chat[]) {
     this._context.globalState.update('silo.chats', chats);
   }
-  private getCurrentChat(): Chat | null {
-    if (!this._currentChatId) return null;
-    return this.getChats().find(c => c.id === this._currentChatId) ?? null;
-  }
   private upsertChat(chat: Chat) {
     const chats = this.getChats().filter(c => c.id !== chat.id);
     this.saveChats([chat, ...chats].slice(0, 50));
   }
-  private newChat(): Chat {
+  /** Create a new chat record (does NOT mutate sidebar state) */
+  private makeChat(): Chat {
     const chat: Chat = { id: Date.now().toString(), title: 'New chat', history: [], createdAt: Date.now() };
     this.upsertChat(chat);
-    this._currentChatId = chat.id;
     return chat;
   }
+  /** Create a new chat and set it as the sidebar's current chat */
+  private newChat(): Chat {
+    const chat = this.makeChat();
+    this._sidebarChatId = chat.id;
+    return chat;
+  }
+  private getCurrentChat(): Chat | null {
+    if (!this._sidebarChatId) return null;
+    return this.getChats().find(c => c.id === this._sidebarChatId) ?? null;
+  }
 
-  // ── WebviewViewProvider ───────────────────────────────────────
+  // ── Sidebar message handler ───────────────────────────────────
+  private async _handleMessage(msg: any) {
+    switch (msg.type) {
+      case 'init':       this.onInit(); break;
+      case 'chat':       await this.handleChat(msg.text, msg.imageData); break;
+      case 'stop':       this.stopGeneration(); break;
+      case 'newChat':    this.createOrShow(); break;
+      case 'loadChat':   this.loadChat(msg.id); break;
+      case 'deleteChat': this.deleteChat(msg.id); break;
+      case 'getHistory': this.sendHistory(); break;
+      case 'renameChat': this.renameChat(msg.id, msg.title); break;
+      case 'toggleFile':
+        this._sidebarFileIncluded = !this._sidebarFileIncluded;
+        this.pushFileState(); break;
+      case 'setModel':
+        this._currentModel = msg.model;
+        this.updateBackendModel(msg.model); break;
+      case 'searchWeb': {
+        const query = encodeURIComponent(msg.query || '');
+        if (query) vscode.env.openExternal(vscode.Uri.parse(`https://duckduckgo.com/?q=${query}`));
+        break;
+      }
+    }
+  }
+
+  // ── WebviewViewProvider (sidebar) ─────────────────────────────
   resolveWebviewView(webviewView: vscode.WebviewView) {
     this._view = webviewView;
     webviewView.webview.options = {
@@ -59,73 +216,43 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
       localResourceRoots: [vscode.Uri.joinPath(this._extensionUri, 'media')]
     };
     webviewView.webview.html = this.getHtml(webviewView.webview);
-
-    webviewView.webview.onDidReceiveMessage(async (msg) => {
-      switch (msg.type) {
-        case 'init':       this.onInit(); break;
-        case 'chat':       await this.handleChat(msg.text, msg.imageData); break;
-        case 'stop':       this.stopGeneration(); break;
-        case 'newChat':    this.startNewChat(); break;
-        case 'loadChat':   this.loadChat(msg.id); break;
-        case 'deleteChat': this.deleteChat(msg.id); break;
-        case 'getHistory': this.sendHistory(); break;
-        case 'renameChat': this.renameChat(msg.id, msg.title); break;
-        case 'toggleFile':
-          this._fileIncluded = !this._fileIncluded;
-          this.pushFileState(); break;
-        case 'setModel':
-          this._currentModel = msg.model;
-          this.updateBackendModel(msg.model); break;
-      }
-    });
-
+    webviewView.webview.onDidReceiveMessage(msg => this._handleMessage(msg));
     vscode.window.onDidChangeActiveTextEditor(() => this.pushFileState());
   }
 
   private onInit() {
     const chats = this.getChats();
     if (chats.length > 0) {
-      this._currentChatId = chats[0].id;
-      this._view?.webview.postMessage({ type: 'loadMessages', history: chats[0].history, title: chats[0].title, id: chats[0].id });
+      this._sidebarChatId = chats[0].id;
+      this.post({ type: 'loadMessages', history: chats[0].history, title: chats[0].title, id: chats[0].id });
     } else {
       const c = this.newChat();
-      this._view?.webview.postMessage({ type: 'loadMessages', history: [], title: c.title, id: c.id });
+      this.post({ type: 'loadMessages', history: [], title: c.title, id: c.id });
     }
+    const webview = this._view?.webview;
+    if (!webview) return;
     const modelsWithUris = MODELS.map(m => ({
       ...m,
-      logoUri: this._view!.webview.asWebviewUri(
-        vscode.Uri.joinPath(this._extensionUri, 'media', m.logoFile)
-      ).toString()
+      logoUri: webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', m.logoFile)).toString()
     }));
-    this._view?.webview.postMessage({ type: 'models', models: modelsWithUris, current: this._currentModel });
-    this.pushFileState();
-  }
-
-  private startNewChat() {
-    const chat = this.newChat();
-    this._view?.webview.postMessage({ type: 'loadMessages', history: [], title: chat.title, id: chat.id });
+    this.post({ type: 'models', models: modelsWithUris, current: this._currentModel });
     this.pushFileState();
   }
 
   private loadChat(id: string) {
     const chat = this.getChats().find(c => c.id === id);
     if (!chat) return;
-    this._currentChatId = id;
-    this._view?.webview.postMessage({ type: 'loadMessages', history: chat.history, title: chat.title, id: chat.id });
+    this._sidebarChatId = id;
+    this.post({ type: 'loadMessages', history: chat.history, title: chat.title, id: chat.id });
   }
 
   private deleteChat(id: string) {
     const chats = this.getChats().filter(c => c.id !== id);
     this.saveChats(chats);
-    if (this._currentChatId === id) {
-      if (chats.length > 0) {
-        this._currentChatId = chats[0].id;
-      } else {
-        const c = this.newChat();
-        this._currentChatId = c.id;
-      }
+    if (this._sidebarChatId === id) {
+      if (chats.length > 0) { this._sidebarChatId = chats[0].id; }
+      else { this._sidebarChatId = this.newChat().id; }
     }
-    // Stay in history — just refresh the list
     this.sendHistory();
   }
 
@@ -135,7 +262,7 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
     if (!chat) return;
     chat.title = title.trim() || 'New chat';
     this.saveChats(chats);
-    this._view?.webview.postMessage({ type: 'chatRenamed', id, title: chat.title });
+    this.post({ type: 'chatRenamed', id, title: chat.title });
   }
 
   private sendHistory() {
@@ -143,13 +270,13 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
       id: c.id, title: c.title, createdAt: c.createdAt,
       preview: c.history.find(m => m.role === 'user')?.content?.slice(0, 60) ?? 'Empty chat'
     }));
-    this._view?.webview.postMessage({ type: 'history', chats, currentId: this._currentChatId });
+    this.post({ type: 'history', chats, currentId: this._sidebarChatId });
   }
 
   private pushFileState() {
     const editor = vscode.window.activeTextEditor;
     const filename = editor ? vscode.workspace.asRelativePath(editor.document.fileName) : null;
-    this._view?.webview.postMessage({ type: 'fileState', filename, included: this._fileIncluded });
+    this.post({ type: 'fileState', filename, included: this._sidebarFileIncluded });
   }
 
   private async updateBackendModel(model: string) {
@@ -159,59 +286,42 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private stopGeneration() {
-    this._abortController?.abort();
-    this._isStreaming = false;
+    if (this._sidebarAbort) { this._sidebarAbort.abort(); this._sidebarAbort = null; }
+    this._sidebarStreaming = false;
   }
 
   public async handleChat(text: string, _imageData?: string) {
-    if (!this._view || this._isStreaming) return;
+    if (!this._view || this._sidebarStreaming) return;
     let chat = this.getCurrentChat();
     if (!chat) { chat = this.newChat(); }
 
-    const fileContext = this._fileIncluded ? await collectProjectContext() : '';
+    const fileContext = this._sidebarFileIncluded ? await collectProjectContext() : '';
     chat.history.push({ role: 'user', content: text });
     if (chat.title === 'New chat' && text) {
       chat.title = text.slice(0, 40) + (text.length > 40 ? '…' : '');
-      this._view.webview.postMessage({ type: 'chatRenamed', id: chat.id, title: chat.title });
+      this.post({ type: 'chatRenamed', id: chat.id, title: chat.title });
     }
     this.upsertChat(chat);
 
-    this._isStreaming = true;
-    this._abortController = new AbortController();
-    this._view.webview.postMessage({ type: 'start' });
+    this._sidebarStreaming = true;
+    this._sidebarAbort = new AbortController();
+    this.post({ type: 'start' });
 
-    let full = '';
-    let stopped = false;
+    let full = ''; let stopped = false;
     try {
       await streamChat(text, chat.history.slice(0, -1), fileContext, token => {
-        full += token;
-        this._view!.webview.postMessage({ type: 'token', token });
-      }, this._abortController.signal);
+        full += token; this.post({ type: 'token', token });
+      }, this._sidebarAbort.signal);
     } catch (e: any) {
-      if (e?.name === 'AbortError' || this._abortController?.signal.aborted) {
-        stopped = true;
-      } else {
-        const isBackendDown = e?.message?.includes('fetch') || e?.code === 'ECONNREFUSED';
-        const errMsg = isBackendDown
-          ? 'Cannot connect to Silo backend. Is it running on port 8942?'
-          : `Error: ${e?.message ?? 'Unknown error'}`;
-        this._view.webview.postMessage({ type: 'error', message: errMsg });
+      if (e?.name === 'AbortError' || this._sidebarAbort?.signal.aborted) { stopped = true; }
+      else {
+        this.post({ type: 'error', message: e?.message?.includes('fetch') || e?.code === 'ECONNREFUSED'
+          ? 'Cannot connect to Silo backend. Is it running on port 8942?' : `Error: ${e?.message ?? 'Unknown error'}` });
       }
     }
-
-    this._isStreaming = false;
-    this._abortController = null;
-
-    if (stopped) {
-      this._view.webview.postMessage({ type: 'stopped' });
-    } else if (full) {
-      this._view.webview.postMessage({ type: 'done' });
-    }
-
-    if (full) {
-      chat.history.push({ role: 'assistant', content: full });
-      this.upsertChat(chat);
-    }
+    this._sidebarStreaming = false; this._sidebarAbort = null;
+    if (stopped) this.post({ type: 'stopped' }); else if (full) this.post({ type: 'done' });
+    if (full) { chat.history.push({ role: 'assistant', content: full }); this.upsertChat(chat); }
   }
 
   public async handleAnalyze() {
@@ -219,15 +329,15 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
     const info = getActiveFileInfo();
     if (!info) return;
     let chat = this.getCurrentChat() ?? this.newChat();
-    this._view.webview.postMessage({ type: 'start', label: `Analyzing ${info.filename}…` });
+    this.post({ type: 'start', label: `Analyzing ${info.filename}…` });
     let full = '';
     await streamAnalysis(info.code, info.filename, token => {
       full += token;
-      this._view!.webview.postMessage({ type: 'token', token });
+      this.post({ type: 'token', token });
     });
     chat.history.push({ role: 'assistant', content: full });
     this.upsertChat(chat);
-    this._view.webview.postMessage({ type: 'done' });
+    this.post({ type: 'done' });
   }
 
   public async sendMessage(text: string) {
@@ -263,14 +373,18 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
 .hdr-btn{background:none;border:none;color:var(--muted);cursor:pointer;padding:5px;border-radius:7px;display:flex;align-items:center;justify-content:center;transition:color .2s,background .2s}
 .hdr-btn:hover{color:var(--text);background:var(--surface2)}
 .hdr-btn svg{width:16px;height:16px}
+.hdr-btn.turbo-on{color:#f39c12;background:rgba(243,156,18,.12)}
+.hdr-btn.turbo-on:hover{color:#e67e22;background:rgba(243,156,18,.2)}
 
 /* ── CHAT TITLE BAR ── */
-#title-bar{display:flex;align-items:center;gap:4px;padding:2px 8px 6px;flex-shrink:0;min-height:28px}
-#chat-title{flex:1;font-size:12px;font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.75}
-#title-edit-input{flex:1;background:var(--surface2);border:1px solid var(--gold-dim);border-radius:6px;color:var(--text);font-size:12px;font-family:inherit;padding:2px 7px;outline:none;display:none}
-.title-btn{background:none;border:none;color:var(--muted);cursor:pointer;padding:3px;border-radius:5px;display:flex;align-items:center;transition:color .2s;flex-shrink:0}
-.title-btn:hover{color:var(--gold)}
-.title-btn svg{width:12px;height:12px}
+#title-bar{display:flex;align-items:center;padding:2px 8px 6px;flex-shrink:0;min-height:28px}
+#title-group{display:flex;align-items:center;gap:3px;min-width:0;max-width:100%;overflow:hidden}
+#chat-title{font-size:12px;font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.75;flex-shrink:1;min-width:0}
+#title-edit-input{flex:1;background:var(--surface2);border:1px solid var(--gold-dim);border-radius:6px;color:var(--text);font-size:12px;font-family:inherit;padding:2px 7px;outline:none;display:none;min-width:0}
+.title-btn{background:none;border:1px solid transparent;color:var(--muted);cursor:pointer;padding:3px 4px;border-radius:5px;display:flex;align-items:center;flex-shrink:0;opacity:0;transition:opacity .15s,color .15s,border-color .15s,background .15s}
+.title-btn svg{width:11px;height:11px}
+#title-group:hover .title-btn{opacity:1}
+.title-btn:hover{color:var(--gold);border-color:var(--border);background:var(--surface2)}
 
 /* ── HISTORY PANEL ── */
 #history-panel{display:none;flex-direction:column;flex:1;overflow:hidden}
@@ -283,9 +397,12 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
 .hist-info{flex:1;overflow:hidden}
 .hist-title{font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .hist-preview{font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
-.hist-del{opacity:0;background:none;border:none;color:var(--muted);cursor:pointer;padding:2px 5px;border-radius:4px;font-size:11px;transition:opacity .15s,color .15s;flex-shrink:0}
-.hist-item:hover .hist-del{opacity:1}
+.hist-actions{display:flex;align-items:center;gap:1px;opacity:0;transition:opacity .15s;flex-shrink:0}
+.hist-item:hover .hist-actions{opacity:1}
+.hist-del,.hist-ren{background:none;border:none;color:var(--muted);cursor:pointer;padding:3px 5px;border-radius:4px;font-size:11px;transition:color .15s;display:flex;align-items:center}
 .hist-del:hover{color:#c0392b}
+.hist-ren:hover{color:var(--gold)}
+.hist-ren svg{width:11px;height:11px}
 
 /* ── CHAT AREA ── */
 #chat-wrap{display:flex;flex-direction:column;flex:1;overflow:hidden}
@@ -326,10 +443,12 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
 /* Input box */
 #input-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:9px 10px;display:flex;flex-direction:column;gap:7px;transition:border-color .2s}
 #input-box:focus-within{border-color:var(--gold-dim)}
-#img-preview-wrap{display:none;align-items:center;gap:6px}
+#img-preview-wrap{display:none;align-items:center;gap:6px;flex-wrap:wrap}
 #img-preview-wrap.show{display:flex}
-#img-preview{height:44px;border-radius:6px;border:1px solid var(--border)}
-#img-remove{background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px;line-height:1;padding:0}
+.img-thumb-wrap{position:relative;flex-shrink:0}
+.img-thumb{height:44px;width:44px;object-fit:cover;border-radius:6px;border:1px solid var(--border)}
+.img-thumb-del{position:absolute;top:-4px;right:-4px;background:var(--surface2);border:1px solid var(--border);border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--muted);font-size:9px;line-height:1;transition:color .15s}
+.img-thumb-del:hover{color:#c0392b}
 #input{background:transparent;border:none;outline:none;color:var(--text);font-family:inherit;font-size:12.5px;resize:none;line-height:1.55;min-height:18px;max-height:110px;overflow-y:auto;width:100%;scrollbar-width:thin}
 #input::placeholder{color:var(--muted)}
 #input:disabled{opacity:.5;cursor:not-allowed}
@@ -353,7 +472,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
 .send-btn.stopping:disabled{opacity:1;cursor:pointer}
 
 /* ── DROPDOWNS ── */
-.dropdown{position:fixed;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:4px;z-index:999;min-width:220px;box-shadow:0 8px 28px rgba(0,0,0,.65);opacity:0;transform:translateY(6px);transition:opacity .18s ease,transform .18s ease;pointer-events:none}
+.dropdown{position:fixed;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:4px;z-index:999;width:min(240px,calc(100vw - 16px));box-shadow:0 8px 28px rgba(0,0,0,.65);opacity:0;transform:translateY(6px);transition:opacity .18s ease,transform .18s ease;pointer-events:none}
 .dropdown.open{opacity:1;transform:translateY(0);pointer-events:all}
 .di{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:7px;cursor:pointer;color:var(--text);font-size:12px;transition:background .12s}
 .di:hover{background:var(--surface)}
@@ -378,6 +497,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
   </button>
   <div id="header-spacer"></div>
+  <button class="hdr-btn" id="turbo-btn" title="Turbo mode — max GPU/RAM performance">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+  </button>
   <button class="hdr-btn" id="new-chat-btn" title="New chat">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="10" y1="11" x2="14" y2="11"/></svg>
   </button>
@@ -385,11 +507,13 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
 
 <!-- Chat title bar -->
 <div id="title-bar">
-  <span id="chat-title">New chat</span>
-  <input id="title-edit-input" type="text" maxlength="60" />
-  <button class="title-btn" id="rename-btn" title="Rename chat">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-  </button>
+  <div id="title-group">
+    <span id="chat-title">New chat</span>
+    <button class="title-btn" id="rename-btn" title="Rename chat">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+    </button>
+    <input id="title-edit-input" type="text" maxlength="60" />
+  </div>
 </div>
 
 <!-- History panel -->
@@ -415,10 +539,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
   </div>
 
   <div id="input-box">
-    <div id="img-preview-wrap">
-      <img id="img-preview" src="" alt=""/>
-      <button id="img-remove" title="Remove">✕</button>
-    </div>
+    <div id="img-preview-wrap"></div>
     <textarea id="input" rows="1" placeholder="Ask Silo…"></textarea>
     <div class="actions">
       <button class="icon-btn" id="plus-btn" title="Add">
@@ -426,11 +547,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
       </button>
       <div class="actions-right">
         <button class="icon-btn" id="mode-btn" title="Mode">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>
+          <svg id="mode-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M14 10V4a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v8"/><path d="M18 11a2 2 0 1 1 4 0v3a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg>
           <span class="icon-btn-label" id="mode-label">Ask</span>
         </button>
         <button class="icon-btn" id="model-btn" title="Model">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+          <img id="model-btn-logo" class="co-logo" style="width:16px;height:16px;padding:1px" src="" alt=""/>
           <span class="icon-btn-label" id="model-label">Fast</span>
         </button>
         <button class="send-btn" id="send-btn" disabled>
@@ -451,6 +572,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
   <div class="di" id="add-file-btn">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
     <div class="di-body"><span class="di-title">Add file context</span><span class="di-desc">Include current file in prompt</span></div>
+  </div>
+  <div class="sep"></div>
+  <div class="di" id="search-web-btn">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <div class="di-body"><span class="di-title">Search online</span><span class="di-desc">Open query in browser</span></div>
   </div>
 </div>
 
@@ -482,35 +608,44 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
 const vscode = acquireVsCodeApi();
 
 // ── Elements ──
-const input      = document.getElementById('input');
-const sendBtn    = document.getElementById('send-btn');
-const sendIcon   = document.getElementById('send-icon');
-const stopIcon   = document.getElementById('stop-icon');
-const messages   = document.getElementById('messages');
-const emptyState = document.getElementById('empty-state');
-const fileBadge  = document.getElementById('file-badge');
-const fileLabel  = document.getElementById('file-name-label');
-const fileX      = document.getElementById('file-x');
-const imgWrap    = document.getElementById('img-preview-wrap');
-const imgPrev    = document.getElementById('img-preview');
-const modelLabel = document.getElementById('model-label');
-const modeLabel  = document.getElementById('mode-label');
-const histPanel  = document.getElementById('history-panel');
-const histList   = document.getElementById('history-list');
-const chatWrap   = document.getElementById('chat-wrap');
-const titleBar   = document.getElementById('title-bar');
-const chatTitle  = document.getElementById('chat-title');
-const titleInput = document.getElementById('title-edit-input');
-const renameBtn  = document.getElementById('rename-btn');
+const input        = document.getElementById('input');
+const sendBtn      = document.getElementById('send-btn');
+const sendIcon     = document.getElementById('send-icon');
+const stopIcon     = document.getElementById('stop-icon');
+const messages     = document.getElementById('messages');
+const emptyState   = document.getElementById('empty-state');
+const fileBadge    = document.getElementById('file-badge');
+const fileLabel    = document.getElementById('file-name-label');
+const fileX        = document.getElementById('file-x');
+const imgWrap      = document.getElementById('img-preview-wrap');
+const modelLabel   = document.getElementById('model-label');
+const modelBtnLogo = document.getElementById('model-btn-logo');
+const modeLabel    = document.getElementById('mode-label');
+const modeIcon     = document.getElementById('mode-icon');
+const histPanel    = document.getElementById('history-panel');
+const histList     = document.getElementById('history-list');
+const chatWrap     = document.getElementById('chat-wrap');
+const titleBar     = document.getElementById('title-bar');
+const chatTitle    = document.getElementById('chat-title');
+const titleInput   = document.getElementById('title-edit-input');
+const renameBtn    = document.getElementById('rename-btn');
 
 // ── State ──
-let pendingImg    = null;
+let pendingImgs   = [];
 let currentBubble = null;
 let histOpen      = false;
 let isStreaming   = false;
 let currentChatId = null;
 let editingId     = null;
 let lastModels    = [];
+let turboMode     = false;
+
+// Mode SVG paths
+const MODE_ICONS = {
+  ask:  '<path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M14 10V4a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v8"/><path d="M18 11a2 2 0 1 1 4 0v3a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>',
+  auto: '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>',
+  plan: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
+};
 
 // ── Helpers ──
 function esc(s) {
@@ -532,14 +667,14 @@ function showEmpty() {
 input.addEventListener('input', () => {
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 110) + 'px';
-  if (!isStreaming) sendBtn.disabled = !input.value.trim() && !pendingImg;
+  if (!isStreaming) sendBtn.disabled = !input.value.trim() && !pendingImgs.length;
 });
 
 // Enter to send, Shift+Enter for newline
 input.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
-    if (!isStreaming && (input.value.trim() || pendingImg)) send();
+    if (!isStreaming && (input.value.trim() || pendingImgs.length)) send();
   }
 });
 
@@ -556,35 +691,47 @@ input.addEventListener('paste', e => {
 });
 
 function readImageFile(file) {
-  if (file.size > 10 * 1024 * 1024) {
-    showError('Image too large (max 10 MB)');
-    return;
-  }
+  if (file.size > 10 * 1024 * 1024) { showError('Image too large (max 10 MB)'); return; }
   const r = new FileReader();
-  r.onload = ev => { if (ev.target?.result) setImg(ev.target.result); };
+  r.onload = ev => { if (ev.target?.result) addImg(ev.target.result); };
   r.onerror = () => showError('Failed to read image');
   r.readAsDataURL(file);
 }
 
-function setImg(url) {
-  pendingImg = url;
-  imgPrev.src = url;
-  imgWrap.classList.add('show');
+function addImg(url) {
+  pendingImgs.push(url);
+  renderImgPreviews();
   if (!isStreaming) sendBtn.disabled = false;
 }
 
-document.getElementById('img-remove').addEventListener('click', () => {
-  pendingImg = null;
-  imgPrev.src = '';
-  imgWrap.classList.remove('show');
-  if (!isStreaming) sendBtn.disabled = !input.value.trim();
-});
+function removeImg(idx) {
+  pendingImgs.splice(idx, 1);
+  renderImgPreviews();
+  if (!isStreaming) sendBtn.disabled = !input.value.trim() && !pendingImgs.length;
+}
+
+function renderImgPreviews() {
+  imgWrap.innerHTML = '';
+  if (!pendingImgs.length) { imgWrap.classList.remove('show'); return; }
+  imgWrap.classList.add('show');
+  pendingImgs.forEach((url, i) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'img-thumb-wrap';
+    const img = document.createElement('img');
+    img.src = url; img.className = 'img-thumb';
+    const del = document.createElement('button');
+    del.className = 'img-thumb-del'; del.textContent = '✕';
+    del.addEventListener('click', () => removeImg(i));
+    wrap.appendChild(img); wrap.appendChild(del);
+    imgWrap.appendChild(wrap);
+  });
+}
 
 document.getElementById('file-input').addEventListener('change', e => {
-  const f = e.target.files?.[0];
-  if (f) readImageFile(f);
+  Array.from(e.target.files ?? []).forEach(readImageFile);
   e.target.value = '';
 });
+document.getElementById('file-input').multiple = true;
 
 // ── Error display ──
 function showError(msg) {
@@ -611,7 +758,7 @@ function setStreaming(val) {
     sendIcon.style.display = '';
     stopIcon.style.display = 'none';
     sendBtn.title = '';
-    sendBtn.disabled = !input.value.trim() && !pendingImg;
+    sendBtn.disabled = !input.value.trim() && !pendingImgs.length;
   }
 }
 
@@ -619,21 +766,33 @@ function setStreaming(val) {
 function send() {
   if (isStreaming) return;
   const text = input.value.trim();
-  if (!text && !pendingImg) return;
+  if (!text && !pendingImgs.length) return;
 
-  addUserMsg(text, pendingImg);
-  vscode.postMessage({ type: 'chat', text, imageData: pendingImg });
+  const imgs = pendingImgs.slice();
+  addUserMsg(text, imgs);
+  vscode.postMessage({ type: 'chat', text, imageData: imgs[0] ?? null });
 
   input.value = '';
   input.style.height = 'auto';
   sendBtn.disabled = true;
-  pendingImg = null;
-  imgPrev.src = '';
-  imgWrap.classList.remove('show');
+  pendingImgs = [];
+  renderImgPreviews();
 }
 
 sendBtn.addEventListener('click', () => {
   if (isStreaming) {
+    // Immediately update UI — don't wait for round-trip
+    isStreaming = false;
+    setStreaming(false);
+    if (currentBubble) {
+      currentBubble.classList.remove('cursor');
+      currentBubble = null;
+    }
+    const el = document.createElement('div');
+    el.className = 'msg-stopped';
+    el.textContent = 'Generation stopped';
+    messages.appendChild(el);
+    scrollBottom();
     vscode.postMessage({ type: 'stop' });
   } else {
     send();
@@ -678,17 +837,18 @@ titleInput.addEventListener('blur', () => {
 });
 
 // ── Messages ──
-function addUserMsg(text, imgData) {
+function addUserMsg(text, imgs) {
   showChat();
   const wrap = document.createElement('div');
   wrap.className = 'msg msg-user';
-  if (imgData) {
+  const imgList = Array.isArray(imgs) ? imgs : (imgs ? [imgs] : []);
+  imgList.forEach(imgData => {
     const img = document.createElement('img');
     img.src = imgData;
     img.className = 'img-attached';
     img.onerror = () => img.remove();
     wrap.appendChild(img);
-  }
+  });
   if (text) {
     const b = document.createElement('div');
     b.className = 'bubble bubble-user';
@@ -808,16 +968,19 @@ window.addEventListener('message', e => {
       break;
     }
     case 'stopped': {
+      // UI already updated by click handler; just ensure state is correct
       if (currentBubble) {
         currentBubble.classList.remove('cursor');
         currentBubble = null;
       }
-      setStreaming(false);
-      const el = document.createElement('div');
-      el.className = 'msg-stopped';
-      el.textContent = 'Generation stopped';
-      messages.appendChild(el);
-      scrollBottom();
+      if (isStreaming) {
+        setStreaming(false);
+        const el = document.createElement('div');
+        el.className = 'msg-stopped';
+        el.textContent = 'Generation stopped';
+        messages.appendChild(el);
+        scrollBottom();
+      }
       break;
     }
     case 'error': {
@@ -831,7 +994,8 @@ window.addEventListener('message', e => {
     }
     case 'loadMessages': {
       currentChatId = msg.id ?? null;
-      chatTitle.textContent = msg.title || 'New chat';
+      const title = msg.title || 'New chat';
+      chatTitle.textContent = title;
       // If editing title for a different chat, cancel
       if (editingId && editingId !== currentChatId) {
         titleInput.style.display = 'none';
@@ -877,6 +1041,16 @@ window.addEventListener('message', e => {
 // ── File badge ──
 fileBadge.addEventListener('click', () => vscode.postMessage({ type: 'toggleFile' }));
 
+// ── Turbo mode ──
+document.getElementById('turbo-btn').addEventListener('click', () => {
+  turboMode = !turboMode;
+  document.getElementById('turbo-btn').classList.toggle('turbo-on', turboMode);
+  vscode.postMessage({ type: 'setTurbo', enabled: turboMode });
+  // Brief visual feedback
+  const btn = document.getElementById('turbo-btn');
+  btn.title = turboMode ? 'Turbo ON — max GPU/RAM' : 'Turbo mode — max GPU/RAM performance';
+});
+
 // ── History ──
 function toggleHistory() {
   histOpen = !histOpen;
@@ -910,7 +1084,12 @@ function buildHistoryList(chats, currentId) {
         <div class="hist-title">\${esc(c.title)}</div>
         <div class="hist-preview">\${esc(c.preview)}</div>
       </div>
-      <button class="hist-del" title="Delete">✕</button>
+      <div class="hist-actions">
+        <button class="hist-ren" title="Rename">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
+        <button class="hist-del" title="Delete">✕</button>
+      </div>
     \`;
     item.querySelector('.hist-info').addEventListener('click', () => {
       histOpen = false;
@@ -918,6 +1097,20 @@ function buildHistoryList(chats, currentId) {
       chatWrap.style.display = 'flex';
       titleBar.style.display = 'flex';
       vscode.postMessage({ type: 'loadChat', id: c.id });
+    });
+    item.querySelector('.hist-ren').addEventListener('click', ev => {
+      ev.stopPropagation();
+      // Load chat then trigger rename
+      histOpen = false;
+      histPanel.classList.remove('open');
+      chatWrap.style.display = 'flex';
+      titleBar.style.display = 'flex';
+      if (c.id !== currentChatId) {
+        vscode.postMessage({ type: 'loadChat', id: c.id });
+        setTimeout(startRename, 200);
+      } else {
+        startRename();
+      }
     });
     item.querySelector('.hist-del').addEventListener('click', ev => {
       ev.stopPropagation();
@@ -984,6 +1177,11 @@ document.getElementById('add-file-btn').addEventListener('click', () => {
   closeAll();
   vscode.postMessage({ type: 'toggleFile' });
 });
+document.getElementById('search-web-btn').addEventListener('click', () => {
+  closeAll();
+  const query = input.value.trim();
+  vscode.postMessage({ type: 'searchWeb', query });
+});
 
 document.getElementById('mode-btn').addEventListener('click', e => {
   e.stopPropagation();
@@ -998,6 +1196,8 @@ document.querySelectorAll('.mode-item').forEach(item => {
     item.classList.add('active');
     item.querySelector('.di-check').style.display = '';
     modeLabel.textContent = item.dataset.label;
+    const modeKey = item.dataset.mode;
+    if (MODE_ICONS[modeKey]) modeIcon.innerHTML = MODE_ICONS[modeKey];
     closeAll();
   });
 });
@@ -1029,6 +1229,7 @@ function buildModelMenu(models, current) {
     item.addEventListener('click', () => {
       vscode.postMessage({ type: 'setModel', model: m.id });
       modelLabel.textContent = m.tier;
+      modelBtnLogo.src = m.logoUri;
       // Update active states
       menu.querySelectorAll('.di').forEach(d => {
         d.classList.remove('active');
@@ -1041,7 +1242,10 @@ function buildModelMenu(models, current) {
     menu.appendChild(item);
   });
   const cur = models.find(m => m.id === current);
-  modelLabel.textContent = cur ? cur.tier : 'Fast';
+  if (cur) {
+    modelLabel.textContent = cur.tier;
+    modelBtnLogo.src = cur.logoUri;
+  }
 }
 
 // ── Init ──

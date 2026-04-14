@@ -14,11 +14,11 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('silo.openChat', () => {
-      vscode.commands.executeCommand('silo.chatView.focus');
+      provider.createOrShow();
     }),
 
     vscode.commands.registerCommand('silo.analyzeFile', () => {
-      vscode.commands.executeCommand('silo.chatView.focus');
+      provider.createOrShow();
       setTimeout(() => provider.handleAnalyze(), 300);
     }),
 
