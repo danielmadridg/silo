@@ -2,7 +2,7 @@
   "name": "silo-local-ai",
   "displayName": "Silo — Local AI Coding Assistant",
   "description": "Claude Code equivalent powered by local LLM (Qwen2.5-Coder)",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publisher": "danielmadridg",
   "repository": { "type": "git", "url": "https://github.com/danielmadridg/silo" },
   "icon": "silologo.png",
@@ -11,6 +11,24 @@
   "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "silo-sidebar",
+          "title": "Silo",
+          "icon": "media/silo-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "silo-sidebar": [
+        {
+          "type": "webview",
+          "id": "silo.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
     "commands": [
       { "command": "silo.openChat", "title": "Silo: Open Chat" },
       { "command": "silo.analyzeFile", "title": "Silo: Analyze Current File" },
