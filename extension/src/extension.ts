@@ -7,7 +7,7 @@ import { SiloCompletionProvider } from './completionProvider';
 
 export function activate(context: vscode.ExtensionContext) {
   // Sidebar panel (activity bar button)
-  const provider = new SiloChatViewProvider(context.extensionUri);
+  const provider = new SiloChatViewProvider(context.extensionUri, context);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(SiloChatViewProvider.viewType, provider)
   );
