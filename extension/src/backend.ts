@@ -8,31 +8,38 @@ export async function streamChat(
   message: string,
   history: { role: string; content: string }[],
   fileContext: string,
-  onToken: (token: string) => void
+  onToken: (token: string) => void,
+  signal?: AbortSignal
 ): Promise<void> {
   const response = await fetch(`${getBackendUrl()}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message, history, file_context: fileContext }),
+    signal,
   });
 
   if (!response.body) throw new Error('No response body');
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    const lines = decoder.decode(value).split('\n');
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue;
-      const data = line.slice(6);
-      if (data === '[DONE]') return;
-      try {
-        const parsed = JSON.parse(data);
-        if (parsed.token) onToken(parsed.token);
-      } catch { /* skip malformed chunks */ }
+  try {
+    while (true) {
+      if (signal?.aborted) break;
+      const { done, value } = await reader.read();
+      if (done) break;
+      const lines = decoder.decode(value).split('\n');
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6);
+        if (data === '[DONE]') return;
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.token) onToken(parsed.token);
+        } catch { /* skip malformed chunks */ }
+      }
     }
+  } finally {
+    reader.cancel().catch(() => {});
   }
 }
 

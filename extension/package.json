@@ -2,7 +2,7 @@
   "name": "silo-local-ai",
   "displayName": "Silo — Local AI Coding Assistant",
   "description": "Claude Code equivalent powered by local LLM (Qwen2.5-Coder)",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "publisher": "danielmadridg",
   "repository": { "type": "git", "url": "https://github.com/danielmadridg/silo" },
   "icon": "silologo.png",
@@ -25,17 +25,24 @@
         {
           "type": "webview",
           "id": "silo.chatView",
-          "name": "Silo Code"
+          "name": "Silo"
         }
       ]
     },
     "commands": [
-      { "command": "silo.openChat", "title": "Silo: Open Chat" },
+      {
+        "command": "silo.openChat",
+        "title": "Silo: Open Chat",
+        "icon": { "light": "media/silologonobg.svg", "dark": "media/silologonobg.svg" }
+      },
       { "command": "silo.analyzeFile", "title": "Silo: Analyze Current File" },
       { "command": "silo.refactorSelection", "title": "Silo: Refactor Selection" },
       { "command": "silo.explainSelection", "title": "Silo: Explain Selection" }
     ],
     "menus": {
+      "editor/title": [
+        { "command": "silo.openChat", "group": "navigation@1" }
+      ],
       "editor/context": [
         { "command": "silo.refactorSelection", "when": "editorHasSelection", "group": "silo" },
         { "command": "silo.explainSelection", "when": "editorHasSelection", "group": "silo" }

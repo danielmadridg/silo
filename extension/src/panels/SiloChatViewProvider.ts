@@ -3,10 +3,9 @@ import { streamChat, streamAnalysis } from '../backend';
 import { collectProjectContext, getActiveFileInfo } from '../contextCollector';
 
 const MODELS = [
-  { id: 'qwen2.5-coder:32b',  label: 'Qwen 2.5 Coder 32B', tier: 'High-end'  },
-  { id: 'qwen2.5-coder:14b',  label: 'Qwen 2.5 Coder 14B', tier: 'Mid-range' },
-  { id: 'qwen2.5-coder:7b',   label: 'Qwen 2.5 Coder 7B',  tier: 'Low-end'  },
-  { id: 'deepseek-r1:7b',     label: 'DeepSeek R1 7B',      tier: 'Reasoning'},
+  { id: 'llama3.2:3b',      label: 'Llama 3.2',       company: 'Meta',     logoFile: 'ollama.svg',   tier: 'Fast'     },
+  { id: 'qwen2.5-coder:7b', label: 'Qwen 2.5 Coder',  company: 'Alibaba',  logoFile: 'qwen.svg',     tier: 'Balanced' },
+  { id: 'deepseek-r1:7b',   label: 'DeepSeek R1',     company: 'DeepSeek', logoFile: 'deepseek.svg', tier: 'Advanced' },
 ];
 
 interface Chat {
@@ -19,9 +18,11 @@ interface Chat {
 export class SiloChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'silo.chatView';
   private _view?: vscode.WebviewView;
-  private _currentModel = 'qwen2.5-coder:32b';
+  private _currentModel = 'llama3.2:3b';
   private _fileIncluded = true;
   private _currentChatId: string | null = null;
+  private _isStreaming = false;
+  private _abortController: AbortController | null = null;
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
@@ -63,10 +64,12 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
       switch (msg.type) {
         case 'init':       this.onInit(); break;
         case 'chat':       await this.handleChat(msg.text, msg.imageData); break;
+        case 'stop':       this.stopGeneration(); break;
         case 'newChat':    this.startNewChat(); break;
         case 'loadChat':   this.loadChat(msg.id); break;
         case 'deleteChat': this.deleteChat(msg.id); break;
         case 'getHistory': this.sendHistory(); break;
+        case 'renameChat': this.renameChat(msg.id, msg.title); break;
         case 'toggleFile':
           this._fileIncluded = !this._fileIncluded;
           this.pushFileState(); break;
@@ -80,21 +83,27 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private onInit() {
-    // Restore last chat or create new
     const chats = this.getChats();
     if (chats.length > 0) {
       this._currentChatId = chats[0].id;
-      this._view?.webview.postMessage({ type: 'loadMessages', history: chats[0].history, title: chats[0].title });
+      this._view?.webview.postMessage({ type: 'loadMessages', history: chats[0].history, title: chats[0].title, id: chats[0].id });
     } else {
-      this.newChat();
+      const c = this.newChat();
+      this._view?.webview.postMessage({ type: 'loadMessages', history: [], title: c.title, id: c.id });
     }
-    this._view?.webview.postMessage({ type: 'models', models: MODELS, current: this._currentModel });
+    const modelsWithUris = MODELS.map(m => ({
+      ...m,
+      logoUri: this._view!.webview.asWebviewUri(
+        vscode.Uri.joinPath(this._extensionUri, 'media', m.logoFile)
+      ).toString()
+    }));
+    this._view?.webview.postMessage({ type: 'models', models: modelsWithUris, current: this._currentModel });
     this.pushFileState();
   }
 
   private startNewChat() {
     const chat = this.newChat();
-    this._view?.webview.postMessage({ type: 'loadMessages', history: [], title: chat.title });
+    this._view?.webview.postMessage({ type: 'loadMessages', history: [], title: chat.title, id: chat.id });
     this.pushFileState();
   }
 
@@ -102,7 +111,7 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
     const chat = this.getChats().find(c => c.id === id);
     if (!chat) return;
     this._currentChatId = id;
-    this._view?.webview.postMessage({ type: 'loadMessages', history: chat.history, title: chat.title });
+    this._view?.webview.postMessage({ type: 'loadMessages', history: chat.history, title: chat.title, id: chat.id });
   }
 
   private deleteChat(id: string) {
@@ -110,12 +119,23 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
     this.saveChats(chats);
     if (this._currentChatId === id) {
       if (chats.length > 0) {
-        this.loadChat(chats[0].id);
+        this._currentChatId = chats[0].id;
       } else {
-        this.startNewChat();
+        const c = this.newChat();
+        this._currentChatId = c.id;
       }
     }
+    // Stay in history — just refresh the list
     this.sendHistory();
+  }
+
+  private renameChat(id: string, title: string) {
+    const chats = this.getChats();
+    const chat = chats.find(c => c.id === id);
+    if (!chat) return;
+    chat.title = title.trim() || 'New chat';
+    this.saveChats(chats);
+    this._view?.webview.postMessage({ type: 'chatRenamed', id, title: chat.title });
   }
 
   private sendHistory() {
@@ -138,8 +158,13 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
     catch { /* backend offline */ }
   }
 
+  private stopGeneration() {
+    this._abortController?.abort();
+    this._isStreaming = false;
+  }
+
   public async handleChat(text: string, _imageData?: string) {
-    if (!this._view) return;
+    if (!this._view || this._isStreaming) return;
     let chat = this.getCurrentChat();
     if (!chat) { chat = this.newChat(); }
 
@@ -147,18 +172,46 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
     chat.history.push({ role: 'user', content: text });
     if (chat.title === 'New chat' && text) {
       chat.title = text.slice(0, 40) + (text.length > 40 ? '…' : '');
+      this._view.webview.postMessage({ type: 'chatRenamed', id: chat.id, title: chat.title });
     }
     this.upsertChat(chat);
 
+    this._isStreaming = true;
+    this._abortController = new AbortController();
     this._view.webview.postMessage({ type: 'start' });
+
     let full = '';
-    await streamChat(text, chat.history.slice(0, -1), fileContext, token => {
-      full += token;
-      this._view!.webview.postMessage({ type: 'token', token });
-    });
-    chat.history.push({ role: 'assistant', content: full });
-    this.upsertChat(chat);
-    this._view.webview.postMessage({ type: 'done' });
+    let stopped = false;
+    try {
+      await streamChat(text, chat.history.slice(0, -1), fileContext, token => {
+        full += token;
+        this._view!.webview.postMessage({ type: 'token', token });
+      }, this._abortController.signal);
+    } catch (e: any) {
+      if (e?.name === 'AbortError' || this._abortController?.signal.aborted) {
+        stopped = true;
+      } else {
+        const isBackendDown = e?.message?.includes('fetch') || e?.code === 'ECONNREFUSED';
+        const errMsg = isBackendDown
+          ? 'Cannot connect to Silo backend. Is it running on port 8942?'
+          : `Error: ${e?.message ?? 'Unknown error'}`;
+        this._view.webview.postMessage({ type: 'error', message: errMsg });
+      }
+    }
+
+    this._isStreaming = false;
+    this._abortController = null;
+
+    if (stopped) {
+      this._view.webview.postMessage({ type: 'stopped' });
+    } else if (full) {
+      this._view.webview.postMessage({ type: 'done' });
+    }
+
+    if (full) {
+      chat.history.push({ role: 'assistant', content: full });
+      this.upsertChat(chat);
+    }
   }
 
   public async handleAnalyze() {
@@ -192,22 +245,32 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Silo Code</title>
+<title>Silo</title>
 <style>
 :root{
   --bg:#080705; --surface:#131108; --surface2:#1e1b12;
   --gold:#C4A165; --gold-dim:#7a6035;
   --text:#F0EBE0; --muted:#8a8070;
   --border:#2a2518; --radius:12px;
+  --stop:#c0392b;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family),-apple-system,sans-serif;font-size:13px;height:100vh;display:flex;flex-direction:column;overflow:hidden}
 
 /* ── HEADER ── */
-#header{display:flex;align-items:center;justify-content:flex-end;padding:6px 8px;gap:2px;flex-shrink:0}
+#header{display:flex;align-items:center;padding:6px 8px;gap:2px;flex-shrink:0}
+#header-spacer{flex:1}
 .hdr-btn{background:none;border:none;color:var(--muted);cursor:pointer;padding:5px;border-radius:7px;display:flex;align-items:center;justify-content:center;transition:color .2s,background .2s}
 .hdr-btn:hover{color:var(--text);background:var(--surface2)}
 .hdr-btn svg{width:16px;height:16px}
+
+/* ── CHAT TITLE BAR ── */
+#title-bar{display:flex;align-items:center;gap:4px;padding:2px 8px 6px;flex-shrink:0;min-height:28px}
+#chat-title{flex:1;font-size:12px;font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.75}
+#title-edit-input{flex:1;background:var(--surface2);border:1px solid var(--gold-dim);border-radius:6px;color:var(--text);font-size:12px;font-family:inherit;padding:2px 7px;outline:none;display:none}
+.title-btn{background:none;border:none;color:var(--muted);cursor:pointer;padding:3px;border-radius:5px;display:flex;align-items:center;transition:color .2s;flex-shrink:0}
+.title-btn:hover{color:var(--gold)}
+.title-btn svg{width:12px;height:12px}
 
 /* ── HISTORY PANEL ── */
 #history-panel{display:none;flex-direction:column;flex:1;overflow:hidden}
@@ -220,7 +283,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
 .hist-info{flex:1;overflow:hidden}
 .hist-title{font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .hist-preview{font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
-.hist-del{opacity:0;background:none;border:none;color:var(--muted);cursor:pointer;padding:2px 4px;border-radius:4px;font-size:11px;transition:opacity .15s,color .15s;flex-shrink:0}
+.hist-del{opacity:0;background:none;border:none;color:var(--muted);cursor:pointer;padding:2px 5px;border-radius:4px;font-size:11px;transition:opacity .15s,color .15s;flex-shrink:0}
 .hist-item:hover .hist-del{opacity:1}
 .hist-del:hover{color:#c0392b}
 
@@ -242,6 +305,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
 .bubble-assistant.cursor::after{content:'▌';color:var(--gold);animation:blink 1s step-end infinite}
 @keyframes blink{50%{opacity:0}}
 .img-attached{max-width:160px;border-radius:8px;border:1px solid var(--border);margin-bottom:3px}
+.msg-stopped{font-size:11px;color:var(--muted);font-style:italic;padding:4px 0;display:flex;align-items:center;gap:5px}
+.msg-stopped::before{content:'';display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--stop);flex-shrink:0}
+/* Code blocks */
+.code-block{position:relative;background:var(--surface2);border:1px solid var(--border);border-radius:8px;margin:4px 0;overflow:hidden}
+.code-block pre{padding:10px 12px;overflow-x:auto;font-family:var(--vscode-editor-font-family),monospace;font-size:11.5px;line-height:1.5;color:var(--text);white-space:pre;margin:0}
+.code-lang{font-size:10px;color:var(--muted);padding:4px 12px 0;font-family:monospace}
+.copy-btn{position:absolute;top:4px;right:6px;background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--muted);cursor:pointer;font-size:10px;padding:2px 7px;transition:color .15s,border-color .15s}
+.copy-btn:hover{color:var(--gold);border-color:var(--gold-dim)}
 
 /* ── BOTTOM ── */
 #bottom{padding:6px 8px 8px;display:flex;flex-direction:column;gap:5px;flex-shrink:0}
@@ -261,6 +332,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
 #img-remove{background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px;line-height:1;padding:0}
 #input{background:transparent;border:none;outline:none;color:var(--text);font-family:inherit;font-size:12.5px;resize:none;line-height:1.55;min-height:18px;max-height:110px;overflow-y:auto;width:100%;scrollbar-width:thin}
 #input::placeholder{color:var(--muted)}
+#input:disabled{opacity:.5;cursor:not-allowed}
+#input.streaming{opacity:1;cursor:text}
 
 /* Actions row */
 .actions{display:flex;align-items:center;gap:3px}
@@ -270,15 +343,17 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
 .icon-btn svg{width:14px;height:14px}
 .icon-btn-label{font-size:10px}
 
-/* Send button */
-.send-btn{background:var(--gold);border:none;color:var(--bg);cursor:pointer;width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;transition:opacity .2s,transform .1s;flex-shrink:0}
+/* Send/Stop button */
+.send-btn{background:var(--gold);border:none;color:var(--bg);cursor:pointer;width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;transition:opacity .2s,transform .1s,background .2s;flex-shrink:0}
 .send-btn:hover{opacity:.85}
 .send-btn:active{transform:scale(.93)}
 .send-btn:disabled{opacity:.25;cursor:default}
 .send-btn svg{width:14px;height:14px}
+.send-btn.stopping{background:var(--stop)}
+.send-btn.stopping:disabled{opacity:1;cursor:pointer}
 
 /* ── DROPDOWNS ── */
-.dropdown{position:fixed;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:4px;z-index:999;min-width:210px;box-shadow:0 8px 28px rgba(0,0,0,.65);opacity:0;transform:translateY(6px);transition:opacity .18s ease,transform .18s ease;pointer-events:none}
+.dropdown{position:fixed;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:4px;z-index:999;min-width:220px;box-shadow:0 8px 28px rgba(0,0,0,.65);opacity:0;transform:translateY(6px);transition:opacity .18s ease,transform .18s ease;pointer-events:none}
 .dropdown.open{opacity:1;transform:translateY(0);pointer-events:all}
 .di{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:7px;cursor:pointer;color:var(--text);font-size:12px;transition:background .12s}
 .di:hover{background:var(--surface)}
@@ -290,6 +365,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
 .di-desc{font-size:10px;color:var(--muted);margin-top:1px}
 .di-check{color:var(--gold);font-size:12px;margin-left:auto;flex-shrink:0}
 .sep{height:1px;background:var(--border);margin:4px 0}
+/* Company logo */
+.co-logo{width:22px;height:22px;border-radius:5px;object-fit:contain;flex-shrink:0;background:#F0EBE0;padding:2px}
 .model-tier{font-size:9px;color:var(--muted);margin-left:auto;background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:1px 5px;flex-shrink:0}
 </style>
 </head>
@@ -300,8 +377,18 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
   <button class="hdr-btn" id="hist-btn" title="Chat history">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
   </button>
+  <div id="header-spacer"></div>
   <button class="hdr-btn" id="new-chat-btn" title="New chat">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="10" y1="11" x2="14" y2="11"/></svg>
+  </button>
+</div>
+
+<!-- Chat title bar -->
+<div id="title-bar">
+  <span id="chat-title">New chat</span>
+  <input id="title-edit-input" type="text" maxlength="60" />
+  <button class="title-btn" id="rename-btn" title="Rename chat">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
   </button>
 </div>
 
@@ -334,24 +421,21 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
     </div>
     <textarea id="input" rows="1" placeholder="Ask Silo…"></textarea>
     <div class="actions">
-      <!-- + -->
       <button class="icon-btn" id="plus-btn" title="Add">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>
       <div class="actions-right">
-        <!-- Mode -->
         <button class="icon-btn" id="mode-btn" title="Mode">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>
           <span class="icon-btn-label" id="mode-label">Ask</span>
         </button>
-        <!-- Model -->
         <button class="icon-btn" id="model-btn" title="Model">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-          <span class="icon-btn-label" id="model-label">32b</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+          <span class="icon-btn-label" id="model-label">Fast</span>
         </button>
-        <!-- Send -->
         <button class="send-btn" id="send-btn" disabled>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+          <svg id="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+          <svg id="stop-icon" viewBox="0 0 24 24" fill="currentColor" style="display:none"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
         </button>
       </div>
     </div>
@@ -368,32 +452,23 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
     <div class="di-body"><span class="di-title">Add file context</span><span class="di-desc">Include current file in prompt</span></div>
   </div>
-  <div class="di" id="search-btn">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    <div class="di-body"><span class="di-title">Search web</span><span class="di-desc">Add search results as context</span></div>
-  </div>
 </div>
 
 <!-- Mode dropdown -->
 <div class="dropdown" id="mode-menu">
   <div class="di mode-item active" data-mode="ask" data-label="Ask">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M14 10V4a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v8"/><path d="M18 11a2 2 0 1 1 4 0v3a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg>
-    <div class="di-body"><span class="di-title">Ask before edits</span><span class="di-desc">Silo will ask for approval before each edit</span></div>
+    <div class="di-body"><span class="di-title">Ask before edits</span><span class="di-desc">Approves each edit before applying</span></div>
     <span class="di-check">✓</span>
   </div>
   <div class="di mode-item" data-mode="auto" data-label="Auto">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-    <div class="di-body"><span class="di-title">Edit automatically</span><span class="di-desc">Applies edits to selected text or file</span></div>
+    <div class="di-body"><span class="di-title">Edit automatically</span><span class="di-desc">Applies edits without asking</span></div>
     <span class="di-check" style="display:none">✓</span>
   </div>
   <div class="di mode-item" data-mode="plan" data-label="Plan">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-    <div class="di-body"><span class="di-title">Plan mode</span><span class="di-desc">Explores code and presents a plan first</span></div>
-    <span class="di-check" style="display:none">✓</span>
-  </div>
-  <div class="di mode-item" data-mode="bypass" data-label="Free">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-    <div class="di-body"><span class="di-title">Bypass permissions</span><span class="di-desc">Runs commands without asking</span></div>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+    <div class="di-body"><span class="di-title">Plan mode</span><span class="di-desc">Explores and presents a plan first</span></div>
     <span class="di-check" style="display:none">✓</span>
   </div>
 </div>
@@ -406,179 +481,425 @@ body{background:var(--bg);color:var(--text);font-family:var(--vscode-font-family
 <script>
 const vscode = acquireVsCodeApi();
 
-// Elements
-const input       = document.getElementById('input');
-const sendBtn     = document.getElementById('send-btn');
-const messages    = document.getElementById('messages');
-const emptyState  = document.getElementById('empty-state');
-const fileBadge   = document.getElementById('file-badge');
-const fileLabel   = document.getElementById('file-name-label');
-const fileX       = document.getElementById('file-x');
-const imgWrap     = document.getElementById('img-preview-wrap');
-const imgPrev     = document.getElementById('img-preview');
-const modelLabel  = document.getElementById('model-label');
-const modeLabel   = document.getElementById('mode-label');
-const histPanel   = document.getElementById('history-panel');
-const histList    = document.getElementById('history-list');
-const chatWrap    = document.getElementById('chat-wrap');
+// ── Elements ──
+const input      = document.getElementById('input');
+const sendBtn    = document.getElementById('send-btn');
+const sendIcon   = document.getElementById('send-icon');
+const stopIcon   = document.getElementById('stop-icon');
+const messages   = document.getElementById('messages');
+const emptyState = document.getElementById('empty-state');
+const fileBadge  = document.getElementById('file-badge');
+const fileLabel  = document.getElementById('file-name-label');
+const fileX      = document.getElementById('file-x');
+const imgWrap    = document.getElementById('img-preview-wrap');
+const imgPrev    = document.getElementById('img-preview');
+const modelLabel = document.getElementById('model-label');
+const modeLabel  = document.getElementById('mode-label');
+const histPanel  = document.getElementById('history-panel');
+const histList   = document.getElementById('history-list');
+const chatWrap   = document.getElementById('chat-wrap');
+const titleBar   = document.getElementById('title-bar');
+const chatTitle  = document.getElementById('chat-title');
+const titleInput = document.getElementById('title-edit-input');
+const renameBtn  = document.getElementById('rename-btn');
 
-let pendingImg = null;
+// ── State ──
+let pendingImg    = null;
 let currentBubble = null;
-let histOpen = false;
+let histOpen      = false;
+let isStreaming   = false;
+let currentChatId = null;
+let editingId     = null;
+let lastModels    = [];
 
-// ── Input auto-resize + send enable ──
+// ── Helpers ──
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function scrollBottom() {
+  messages.scrollTop = messages.scrollHeight;
+}
+function showChat() {
+  emptyState.style.display = 'none';
+  messages.style.display = 'flex';
+}
+function showEmpty() {
+  emptyState.style.display = 'flex';
+  messages.style.display = 'none';
+}
+
+// ── Input auto-resize ──
 input.addEventListener('input', () => {
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 110) + 'px';
-  sendBtn.disabled = !input.value.trim() && !pendingImg;
-});
-input.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  if (!isStreaming) sendBtn.disabled = !input.value.trim() && !pendingImg;
 });
 
-// ── Image paste ──
+// Enter to send, Shift+Enter for newline
+input.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    if (!isStreaming && (input.value.trim() || pendingImg)) send();
+  }
+});
+
+// ── Image handling ──
 input.addEventListener('paste', e => {
   for (const item of (e.clipboardData?.items ?? [])) {
     if (item.type.startsWith('image/')) {
       e.preventDefault();
-      const r = new FileReader();
-      r.onload = ev => setImg(ev.target.result);
-      r.readAsDataURL(item.getAsFile());
+      const file = item.getAsFile();
+      if (file) readImageFile(file);
       return;
     }
   }
 });
 
+function readImageFile(file) {
+  if (file.size > 10 * 1024 * 1024) {
+    showError('Image too large (max 10 MB)');
+    return;
+  }
+  const r = new FileReader();
+  r.onload = ev => { if (ev.target?.result) setImg(ev.target.result); };
+  r.onerror = () => showError('Failed to read image');
+  r.readAsDataURL(file);
+}
+
 function setImg(url) {
   pendingImg = url;
   imgPrev.src = url;
   imgWrap.classList.add('show');
-  sendBtn.disabled = false;
+  if (!isStreaming) sendBtn.disabled = false;
 }
-document.getElementById('img-remove').onclick = () => {
+
+document.getElementById('img-remove').addEventListener('click', () => {
   pendingImg = null;
   imgPrev.src = '';
   imgWrap.classList.remove('show');
-  sendBtn.disabled = !input.value.trim();
-};
-document.getElementById('file-input').onchange = e => {
-  const f = e.target.files[0];
-  if (!f) return;
-  const r = new FileReader();
-  r.onload = ev => setImg(ev.target.result);
-  r.readAsDataURL(f);
-  e.target.value = '';
-};
+  if (!isStreaming) sendBtn.disabled = !input.value.trim();
+});
 
-// ── Send ──
+document.getElementById('file-input').addEventListener('change', e => {
+  const f = e.target.files?.[0];
+  if (f) readImageFile(f);
+  e.target.value = '';
+});
+
+// ── Error display ──
+function showError(msg) {
+  const el = document.createElement('div');
+  el.className = 'msg-stopped';
+  el.style.color = '#e74c3c';
+  el.textContent = msg;
+  messages.appendChild(el);
+  scrollBottom();
+  showChat();
+}
+
+// ── Streaming state ──
+function setStreaming(val) {
+  isStreaming = val;
+  if (val) {
+    sendBtn.disabled = false;
+    sendBtn.classList.add('stopping');
+    sendIcon.style.display = 'none';
+    stopIcon.style.display = '';
+    sendBtn.title = 'Stop generation';
+  } else {
+    sendBtn.classList.remove('stopping');
+    sendIcon.style.display = '';
+    stopIcon.style.display = 'none';
+    sendBtn.title = '';
+    sendBtn.disabled = !input.value.trim() && !pendingImg;
+  }
+}
+
+// ── Send / Stop ──
 function send() {
+  if (isStreaming) return;
   const text = input.value.trim();
   if (!text && !pendingImg) return;
+
   addUserMsg(text, pendingImg);
   vscode.postMessage({ type: 'chat', text, imageData: pendingImg });
-  input.value = ''; input.style.height = 'auto'; sendBtn.disabled = true;
-  pendingImg = null; imgPrev.src = ''; imgWrap.classList.remove('show');
+
+  input.value = '';
+  input.style.height = 'auto';
+  sendBtn.disabled = true;
+  pendingImg = null;
+  imgPrev.src = '';
+  imgWrap.classList.remove('show');
 }
-sendBtn.onclick = send;
+
+sendBtn.addEventListener('click', () => {
+  if (isStreaming) {
+    vscode.postMessage({ type: 'stop' });
+  } else {
+    send();
+  }
+});
+
+// ── Chat title / rename ──
+function startRename() {
+  if (!currentChatId) return;
+  titleInput.value = chatTitle.textContent;
+  chatTitle.style.display = 'none';
+  titleInput.style.display = 'block';
+  titleInput.focus();
+  titleInput.select();
+  editingId = currentChatId;
+}
+
+function commitRename() {
+  if (!editingId) return;
+  const newTitle = titleInput.value.trim();
+  if (newTitle && newTitle !== chatTitle.textContent) {
+    vscode.postMessage({ type: 'renameChat', id: editingId, title: newTitle });
+    chatTitle.textContent = newTitle;
+  }
+  titleInput.style.display = 'none';
+  chatTitle.style.display = '';
+  editingId = null;
+}
+
+renameBtn.addEventListener('click', startRename);
+titleInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); commitRename(); }
+  if (e.key === 'Escape') {
+    titleInput.style.display = 'none';
+    chatTitle.style.display = '';
+    editingId = null;
+  }
+});
+titleInput.addEventListener('blur', () => {
+  // Small delay so click on rename btn doesn't double-fire
+  setTimeout(commitRename, 100);
+});
 
 // ── Messages ──
-function showChat() {
-  emptyState.style.display = 'none';
-  messages.style.display = 'flex';
-}
 function addUserMsg(text, imgData) {
   showChat();
   const wrap = document.createElement('div');
   wrap.className = 'msg msg-user';
   if (imgData) {
     const img = document.createElement('img');
-    img.src = imgData; img.className = 'img-attached';
+    img.src = imgData;
+    img.className = 'img-attached';
+    img.onerror = () => img.remove();
     wrap.appendChild(img);
   }
   if (text) {
     const b = document.createElement('div');
-    b.className = 'bubble bubble-user'; b.textContent = text;
+    b.className = 'bubble bubble-user';
+    b.textContent = text;
     wrap.appendChild(b);
   }
-  messages.appendChild(wrap);
-  messages.scrollTop = messages.scrollHeight;
+  if (wrap.children.length) {
+    messages.appendChild(wrap);
+    scrollBottom();
+  }
 }
 
-window.addEventListener('message', e => {
-  const msg = e.data;
-  if (msg.type === 'start') {
-    showChat();
+// ── Markdown renderer (code blocks + copy) ──
+const FENCE = '\`\`\`';
+const CODE_SPLIT = new RegExp('(' + FENCE + '[\\s\\S]*?' + FENCE + ')', 'g');
+const CODE_MATCH = new RegExp('^' + FENCE + '(\\w*)\\n?([\\s\\S]*?)' + FENCE + '$');
+function renderContent(el, text) {
+  const parts = String(text ?? '').split(CODE_SPLIT);
+  parts.forEach(part => {
+    const codeMatch = part.match(CODE_MATCH);
+    if (codeMatch) {
+      const lang = codeMatch[1] || '';
+      const code = codeMatch[2];
+      const block = document.createElement('div');
+      block.className = 'code-block';
+      if (lang) {
+        const langEl = document.createElement('div');
+        langEl.className = 'code-lang';
+        langEl.textContent = lang;
+        block.appendChild(langEl);
+      }
+      const pre = document.createElement('pre');
+      pre.textContent = code;
+      block.appendChild(pre);
+      const copyBtn = document.createElement('button');
+      copyBtn.className = 'copy-btn';
+      copyBtn.textContent = 'Copy';
+      copyBtn.addEventListener('click', () => {
+        navigator.clipboard.writeText(code).then(() => {
+          copyBtn.textContent = 'Copied!';
+          setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+        }).catch(() => {
+          copyBtn.textContent = 'Error';
+          setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+        });
+      });
+      block.appendChild(copyBtn);
+      el.appendChild(block);
+    } else if (part) {
+      const span = document.createElement('span');
+      span.textContent = part;
+      el.appendChild(span);
+    }
+  });
+}
+
+function renderHistory(hist) {
+  messages.innerHTML = '';
+  if (!hist?.length) { showEmpty(); return; }
+  showChat();
+  hist.forEach(m => {
+    if (!['user','assistant'].includes(m.role)) return;
     const wrap = document.createElement('div');
-    wrap.className = 'msg msg-assistant';
+    wrap.className = 'msg msg-' + m.role;
     const b = document.createElement('div');
-    b.className = 'bubble bubble-assistant cursor';
-    b.textContent = msg.label || '';
+    b.className = 'bubble bubble-' + m.role;
+    if (m.role === 'assistant') {
+      renderContent(b, m.content);
+    } else {
+      b.textContent = m.content ?? '';
+    }
     wrap.appendChild(b);
     messages.appendChild(wrap);
-    currentBubble = b;
-    messages.scrollTop = messages.scrollHeight;
-  } else if (msg.type === 'token' && currentBubble) {
-    currentBubble.textContent += msg.token;
-    messages.scrollTop = messages.scrollHeight;
-  } else if (msg.type === 'done' && currentBubble) {
-    currentBubble.classList.remove('cursor');
-    currentBubble = null;
-  } else if (msg.type === 'loadMessages') {
-    messages.innerHTML = '';
-    const hist = msg.history || [];
-    if (hist.length === 0) {
-      emptyState.style.display = 'flex';
-      messages.style.display = 'none';
-    } else {
+  });
+  scrollBottom();
+}
+
+// ── Message handler ──
+window.addEventListener('message', e => {
+  const msg = e.data;
+  if (!msg?.type) return;
+
+  switch (msg.type) {
+    case 'start': {
       showChat();
-      hist.forEach(m => {
-        const wrap = document.createElement('div');
-        wrap.className = 'msg msg-' + m.role;
-        const b = document.createElement('div');
-        b.className = 'bubble bubble-' + m.role;
-        b.textContent = m.content;
-        wrap.appendChild(b);
-        messages.appendChild(wrap);
-      });
-      messages.scrollTop = messages.scrollHeight;
+      setStreaming(true);
+      const wrap = document.createElement('div');
+      wrap.className = 'msg msg-assistant';
+      const b = document.createElement('div');
+      b.className = 'bubble bubble-assistant cursor';
+      if (msg.label) b.textContent = msg.label;
+      wrap.appendChild(b);
+      messages.appendChild(wrap);
+      currentBubble = b;
+      scrollBottom();
+      break;
     }
-    if (histOpen) toggleHistory();
-  } else if (msg.type === 'fileState') {
-    if (msg.filename) {
-      fileBadge.style.display = 'flex';
-      fileLabel.textContent = msg.filename;
-      fileBadge.classList.toggle('excluded', !msg.included);
-      fileX.textContent = msg.included ? '✕' : '+';
-    } else {
-      fileBadge.style.display = 'none';
+    case 'token': {
+      if (currentBubble) {
+        currentBubble.textContent += msg.token ?? '';
+        scrollBottom();
+      }
+      break;
     }
-  } else if (msg.type === 'models') {
-    buildModelMenu(msg.models, msg.current);
-  } else if (msg.type === 'history') {
-    buildHistoryList(msg.chats, msg.currentId);
+    case 'done': {
+      if (currentBubble) {
+        currentBubble.classList.remove('cursor');
+        // Re-render with code block highlighting
+        const raw = currentBubble.textContent ?? '';
+        if (raw.includes(FENCE)) {
+          currentBubble.textContent = '';
+          renderContent(currentBubble, raw);
+        }
+        currentBubble = null;
+      }
+      setStreaming(false);
+      break;
+    }
+    case 'stopped': {
+      if (currentBubble) {
+        currentBubble.classList.remove('cursor');
+        currentBubble = null;
+      }
+      setStreaming(false);
+      const el = document.createElement('div');
+      el.className = 'msg-stopped';
+      el.textContent = 'Generation stopped';
+      messages.appendChild(el);
+      scrollBottom();
+      break;
+    }
+    case 'error': {
+      if (currentBubble) {
+        currentBubble.classList.remove('cursor');
+        currentBubble = null;
+      }
+      setStreaming(false);
+      showError(msg.message || 'An error occurred');
+      break;
+    }
+    case 'loadMessages': {
+      currentChatId = msg.id ?? null;
+      chatTitle.textContent = msg.title || 'New chat';
+      // If editing title for a different chat, cancel
+      if (editingId && editingId !== currentChatId) {
+        titleInput.style.display = 'none';
+        chatTitle.style.display = '';
+        editingId = null;
+      }
+      renderHistory(msg.history);
+      if (histOpen && !msg.stayInHistory) {
+        histOpen = false;
+        histPanel.classList.remove('open');
+        chatWrap.style.display = 'flex';
+        titleBar.style.display = 'flex';
+      }
+      break;
+    }
+    case 'chatRenamed': {
+      if (msg.id === currentChatId) chatTitle.textContent = msg.title ?? '';
+      break;
+    }
+    case 'fileState': {
+      if (msg.filename) {
+        fileBadge.style.display = 'flex';
+        fileLabel.textContent = msg.filename;
+        fileBadge.classList.toggle('excluded', !msg.included);
+        fileX.textContent = msg.included ? '✕' : '+';
+      } else {
+        fileBadge.style.display = 'none';
+      }
+      break;
+    }
+    case 'models': {
+      lastModels = msg.models ?? [];
+      buildModelMenu(lastModels, msg.current);
+      break;
+    }
+    case 'history': {
+      buildHistoryList(msg.chats ?? [], msg.currentId);
+      break;
+    }
   }
 });
 
 // ── File badge ──
-fileBadge.onclick = () => vscode.postMessage({ type: 'toggleFile' });
+fileBadge.addEventListener('click', () => vscode.postMessage({ type: 'toggleFile' }));
 
 // ── History ──
 function toggleHistory() {
   histOpen = !histOpen;
   histPanel.classList.toggle('open', histOpen);
   chatWrap.style.display = histOpen ? 'none' : 'flex';
+  titleBar.style.display = histOpen ? 'none' : 'flex';
   if (histOpen) vscode.postMessage({ type: 'getHistory' });
 }
-document.getElementById('hist-btn').onclick = toggleHistory;
-document.getElementById('new-chat-btn').onclick = () => {
+
+document.getElementById('hist-btn').addEventListener('click', toggleHistory);
+document.getElementById('new-chat-btn').addEventListener('click', () => {
+  if (isStreaming) return; // don't start new chat mid-stream
   if (histOpen) toggleHistory();
   vscode.postMessage({ type: 'newChat' });
-};
+});
 
 function buildHistoryList(chats, currentId) {
   histList.innerHTML = '';
   if (!chats.length) {
-    histList.innerHTML = '<div style="padding:12px;color:var(--muted);font-size:11px">No chats yet</div>';
+    const empty = document.createElement('div');
+    empty.style.cssText = 'padding:12px;color:var(--muted);font-size:11px';
+    empty.textContent = 'No chats yet';
+    histList.appendChild(empty);
     return;
   }
   chats.forEach(c => {
@@ -589,47 +910,87 @@ function buildHistoryList(chats, currentId) {
         <div class="hist-title">\${esc(c.title)}</div>
         <div class="hist-preview">\${esc(c.preview)}</div>
       </div>
-      <button class="hist-del" title="Delete" data-id="\${c.id}">✕</button>
+      <button class="hist-del" title="Delete">✕</button>
     \`;
-    item.querySelector('.hist-info').onclick = () => vscode.postMessage({ type: 'loadChat', id: c.id });
-    item.querySelector('.hist-del').onclick = (e) => {
-      e.stopPropagation();
+    item.querySelector('.hist-info').addEventListener('click', () => {
+      histOpen = false;
+      histPanel.classList.remove('open');
+      chatWrap.style.display = 'flex';
+      titleBar.style.display = 'flex';
+      vscode.postMessage({ type: 'loadChat', id: c.id });
+    });
+    item.querySelector('.hist-del').addEventListener('click', ev => {
+      ev.stopPropagation();
+      item.style.opacity = '0.4';
+      item.style.pointerEvents = 'none';
       vscode.postMessage({ type: 'deleteChat', id: c.id });
-    };
+      setTimeout(() => {
+        item.remove();
+        if (!histList.querySelector('.hist-item')) {
+          const empty = document.createElement('div');
+          empty.style.cssText = 'padding:12px;color:var(--muted);font-size:11px';
+          empty.textContent = 'No chats yet';
+          histList.appendChild(empty);
+        }
+      }, 200);
+    });
     histList.appendChild(item);
   });
 }
 
-function esc(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
 // ── Dropdowns ──
 function closeAll() {
-  document.querySelectorAll('.dropdown').forEach(d => d.classList.remove('open'));
+  document.querySelectorAll('.dropdown.open').forEach(d => d.classList.remove('open'));
 }
+
 document.addEventListener('click', e => {
   if (!e.target.closest('.dropdown') && !e.target.closest('.icon-btn')) closeAll();
 });
+
+// Close dropdowns on Escape
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeAll();
+});
+
 function openDropdown(menu, btn) {
   const isOpen = menu.classList.contains('open');
   closeAll();
   if (!isOpen) {
     const r = btn.getBoundingClientRect();
-    menu.style.bottom = (window.innerHeight - r.top + 4) + 'px';
-    menu.style.left = Math.max(4, r.left) + 'px';
+    const menuH = menu.offsetHeight || 200;
+    const spaceAbove = r.top;
+    // Open above if not enough space below
+    if (spaceAbove > menuH + 8) {
+      menu.style.bottom = (window.innerHeight - r.top + 4) + 'px';
+      menu.style.top = 'auto';
+    } else {
+      menu.style.top = (r.bottom + 4) + 'px';
+      menu.style.bottom = 'auto';
+    }
+    menu.style.left = Math.max(4, Math.min(r.left, window.innerWidth - 230)) + 'px';
     menu.classList.add('open');
   }
 }
 
-document.getElementById('plus-btn').onclick = e => { e.stopPropagation(); openDropdown(document.getElementById('plus-menu'), e.currentTarget); };
-document.getElementById('add-img-btn').onclick = () => { closeAll(); document.getElementById('file-input').click(); };
-document.getElementById('add-file-btn').onclick = () => { closeAll(); vscode.postMessage({ type: 'toggleFile' }); };
-document.getElementById('search-btn').onclick = () => { closeAll(); };
+document.getElementById('plus-btn').addEventListener('click', e => {
+  e.stopPropagation();
+  openDropdown(document.getElementById('plus-menu'), e.currentTarget);
+});
+document.getElementById('add-img-btn').addEventListener('click', () => {
+  closeAll();
+  document.getElementById('file-input').click();
+});
+document.getElementById('add-file-btn').addEventListener('click', () => {
+  closeAll();
+  vscode.postMessage({ type: 'toggleFile' });
+});
 
-document.getElementById('mode-btn').onclick = e => { e.stopPropagation(); openDropdown(document.getElementById('mode-menu'), e.currentTarget); };
+document.getElementById('mode-btn').addEventListener('click', e => {
+  e.stopPropagation();
+  openDropdown(document.getElementById('mode-menu'), e.currentTarget);
+});
 document.querySelectorAll('.mode-item').forEach(item => {
-  item.onclick = () => {
+  item.addEventListener('click', () => {
     document.querySelectorAll('.mode-item').forEach(i => {
       i.classList.remove('active');
       i.querySelector('.di-check').style.display = 'none';
@@ -638,33 +999,49 @@ document.querySelectorAll('.mode-item').forEach(item => {
     item.querySelector('.di-check').style.display = '';
     modeLabel.textContent = item.dataset.label;
     closeAll();
-  };
+  });
 });
 
-document.getElementById('model-btn').onclick = e => { e.stopPropagation(); openDropdown(document.getElementById('model-menu'), e.currentTarget); };
+document.getElementById('model-btn').addEventListener('click', e => {
+  e.stopPropagation();
+  openDropdown(document.getElementById('model-menu'), e.currentTarget);
+});
 
 function buildModelMenu(models, current) {
   const menu = document.getElementById('model-menu');
   menu.innerHTML = '';
+  if (!models?.length) {
+    menu.innerHTML = '<div style="padding:10px;color:var(--muted);font-size:11px">No models available</div>';
+    return;
+  }
   models.forEach(m => {
     const item = document.createElement('div');
     item.className = 'di' + (m.id === current ? ' active' : '');
     item.innerHTML = \`
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-      <div class="di-body"><span class="di-title">\${esc(m.label)}</span></div>
+      <img class="co-logo" src="\${esc(m.logoUri)}" alt="\${esc(m.company)}" onerror="this.style.display='none'"/>
+      <div class="di-body">
+        <span class="di-title">\${esc(m.label)}</span>
+        <span class="di-desc">\${esc(m.company)}</span>
+      </div>
       <span class="model-tier">\${esc(m.tier)}</span>
       <span class="di-check" style="\${m.id === current ? '' : 'display:none'}">✓</span>
     \`;
-    item.onclick = () => {
+    item.addEventListener('click', () => {
       vscode.postMessage({ type: 'setModel', model: m.id });
-      const tag = m.id.split(':')[1] || m.id;
-      modelLabel.textContent = tag;
+      modelLabel.textContent = m.tier;
+      // Update active states
+      menu.querySelectorAll('.di').forEach(d => {
+        d.classList.remove('active');
+        d.querySelector('.di-check').style.display = 'none';
+      });
+      item.classList.add('active');
+      item.querySelector('.di-check').style.display = '';
       closeAll();
-    };
+    });
     menu.appendChild(item);
   });
-  const tag = current.split(':')[1] || current;
-  modelLabel.textContent = tag;
+  const cur = models.find(m => m.id === current);
+  modelLabel.textContent = cur ? cur.tier : 'Fast';
 }
 
 // ── Init ──

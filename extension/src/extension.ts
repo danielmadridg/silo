@@ -14,11 +14,11 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('silo.openChat', () => {
-      vscode.commands.executeCommand('workbench.view.extension.silo-sidebar');
+      vscode.commands.executeCommand('silo.chatView.focus');
     }),
 
     vscode.commands.registerCommand('silo.analyzeFile', () => {
-      vscode.commands.executeCommand('workbench.view.extension.silo-sidebar');
+      vscode.commands.executeCommand('silo.chatView.focus');
       setTimeout(() => provider.handleAnalyze(), 300);
     }),
 
@@ -48,7 +48,7 @@ export function activate(context: vscode.ExtensionContext) {
       if (!selected) {
         return vscode.window.showWarningMessage('Silo: No text selected');
       }
-      vscode.commands.executeCommand('workbench.view.extension.silo-sidebar');
+      vscode.commands.executeCommand('silo.chatView.focus');
       await new Promise(r => setTimeout(r, 300));
       provider.sendMessage(`Explain this code:\n\`\`\`\n${selected}\n\`\`\``);
     }),
