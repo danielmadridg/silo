@@ -1,8 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from pydantic import BaseModel
 from model import check_model
-from config import MODEL_NAME
+import config
 from routers import chat, completions, analysis
 
 
@@ -10,10 +11,10 @@ from routers import chat, completions, analysis
 async def lifespan(app: FastAPI):
     ok = await check_model()
     if ok:
-        print(f"Silo ready — model: {MODEL_NAME}")
+        print(f"Silo ready — model: {config.MODEL_NAME}")
     else:
-        print(f"WARNING: model '{MODEL_NAME}' not found in Ollama.")
-        print(f"Run: ollama pull {MODEL_NAME}")
+        print(f"WARNING: model '{config.MODEL_NAME}' not found in Ollama.")
+        print(f"Run: ollama pull {config.MODEL_NAME}")
     yield
 
 
@@ -36,6 +37,15 @@ async def health():
     model_ok = await check_model()
     return {
         "status": "ok" if model_ok else "model_missing",
-        "model": MODEL_NAME,
+        "model": config.MODEL_NAME,
         "model_ready": model_ok
     }
+
+
+class ModelSwitch(BaseModel):
+    model: str
+
+@app.post("/model")
+async def set_model(body: ModelSwitch):
+    config.MODEL_NAME = body.model
+    return {"model": config.MODEL_NAME}
