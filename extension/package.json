@@ -1,5 +1,5 @@
 {
-  "name": "silo",
+  "name": "silo-local-ai",
   "displayName": "Silo — Local AI Coding Assistant",
   "description": "Claude Code equivalent powered by local LLM (Qwen2.5-Coder)",
   "version": "1.0.0",
