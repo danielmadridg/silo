@@ -813,26 +813,25 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;background:ra
 #empty-hints kbd{background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-family:var(--mono);font-size:9.5px;color:var(--muted)}
 @keyframes emptyIn{from{opacity:0}to{opacity:1}}
 @keyframes emptyLogo{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
-#messages{flex:1;overflow-y:auto;padding:14px 14px 6px 34px;display:flex;flex-direction:column;gap:16px;scrollbar-width:thin;scrollbar-color:var(--border) transparent;position:relative}
+#messages{flex:1;overflow-y:auto;padding:16px 16px 8px 32px;display:flex;flex-direction:column;gap:20px;scrollbar-width:thin;scrollbar-color:var(--border) transparent;position:relative}
 #messages::-webkit-scrollbar{width:4px}
 #messages::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
 #messages::-webkit-scrollbar-thumb:hover{background:var(--border-bright)}
-/* vertical rail connecting all messages */
-#messages::before{content:'';position:absolute;left:17px;top:28px;bottom:28px;width:1px;background:linear-gradient(180deg,transparent 0%,var(--border) 8%,var(--border) 92%,transparent 100%);pointer-events:none}
+/* vertical rail */
+#messages::before{content:'';position:absolute;left:14px;top:0;bottom:0;width:1px;background:linear-gradient(180deg,transparent 0%,var(--border) 5%,var(--border) 95%,transparent 100%);pointer-events:none}
 
 /* ── MESSAGES ── */
-.msg{display:flex;flex-direction:column;gap:4px;animation:msgIn .35s var(--ease-out);position:relative}
-@keyframes msgIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.msg{display:flex;flex-direction:column;gap:5px;animation:msgIn .3s var(--ease-out);position:relative}
+@keyframes msgIn{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
 .msg-user{align-items:flex-end}
 .msg-assistant{align-items:flex-start}
-/* rail dots — left side of every message */
-.msg::before{content:'';position:absolute;left:-24px;top:10px;width:9px;height:9px;border-radius:50%;z-index:1;transition:background .3s var(--ease),border-color .3s var(--ease),box-shadow .3s var(--ease)}
-.msg-user::before{background:transparent;border:1.5px solid var(--gold-dim);box-shadow:none}
+/* rail dot — small, uniform, left of every message */
+.msg::before{content:'';position:absolute;left:-21px;top:9px;width:7px;height:7px;border-radius:50%;z-index:2;transition:background .25s var(--ease),border-color .25s var(--ease),box-shadow .25s var(--ease)}
+.msg-user::before{background:var(--bg);border:1.5px solid var(--gold-dim)}
 .msg-assistant::before{background:var(--surface3);border:1.5px solid var(--border-bright)}
-/* active/streaming assistant dot glows gold */
-.msg-assistant.streaming::before{background:var(--gold);border-color:var(--gold-bright);box-shadow:0 0 0 3px var(--gold-glow),0 0 10px var(--gold-glow);animation:dotPulse 1.4s var(--ease) infinite}
-/* tool-activity section gets its own smaller connector dot */
-.tool-activity{margin-left:-2px}
+/* streaming: simple glow, no huge rings */
+.msg-assistant.streaming::before{background:var(--gold);border-color:var(--gold);box-shadow:0 0 6px rgba(196,161,101,.5);animation:dotGlow 1.6s ease-in-out infinite}
+@keyframes dotGlow{0%,100%{box-shadow:0 0 4px rgba(196,161,101,.4)}50%{box-shadow:0 0 10px rgba(196,161,101,.7)}}
 .bubble{padding:10px 14px;border-radius:var(--radius);line-height:1.68;white-space:pre-wrap;word-break:break-word;font-size:13px;letter-spacing:-.003em;max-width:100%}
 .bubble-user{background:linear-gradient(180deg,var(--surface2),var(--surface));border:1px solid var(--border);border-bottom-right-radius:5px;color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.25),0 0 0 1px rgba(196,161,101,.04)}
 .bubble-assistant{background:transparent;color:var(--text);padding:4px 0 4px 0;border-bottom-left-radius:4px;font-weight:400}
@@ -924,28 +923,27 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;background:ra
 .ai-status{display:flex;align-items:center;gap:9px;font-family:var(--serif);font-style:italic;font-size:13px;color:var(--muted);padding:4px 0 8px;min-height:22px;letter-spacing:.01em}
 .ai-status-text{font-style:italic}
 /* 3-dot wave loader */
-.ai-loader{position:relative;width:6px;height:6px;border-radius:50%;background:var(--gold);flex-shrink:0;animation:wave1 1.4s ease-in-out infinite;margin-left:10px}
-.ai-loader::before,.ai-loader::after{content:'';position:absolute;top:0;width:6px;height:6px;border-radius:50%;background:var(--gold)}
-.ai-loader::before{left:-10px;animation:wave0 1.4s ease-in-out infinite}
-.ai-loader::after{left:10px;animation:wave2 1.4s ease-in-out infinite}
-@keyframes wave0{0%,80%,100%{opacity:.2;transform:translateY(0)}20%{opacity:1;transform:translateY(-4px)}}
-@keyframes wave1{0%,80%,100%{opacity:.2;transform:translateY(0)}40%{opacity:1;transform:translateY(-4px)}}
-@keyframes wave2{0%,80%,100%{opacity:.2;transform:translateY(0)}60%{opacity:1;transform:translateY(-4px)}}
+.ai-loader{position:relative;width:5px;height:5px;border-radius:50%;background:var(--gold);flex-shrink:0;margin:0 10px;animation:dMid 1.2s ease-in-out infinite}
+.ai-loader::before,.ai-loader::after{content:'';position:absolute;top:0;width:5px;height:5px;border-radius:50%;background:var(--gold)}
+.ai-loader::before{left:-10px;animation:dLeft 1.2s ease-in-out infinite}
+.ai-loader::after{left:10px;animation:dRight 1.2s ease-in-out infinite}
+@keyframes dLeft {0%,55%,100%{opacity:.2;transform:translateY(0)} 18%{opacity:1;transform:translateY(-4px)}}
+@keyframes dMid  {0%,55%,100%{opacity:.2;transform:translateY(0)} 36%{opacity:1;transform:translateY(-4px)}}
+@keyframes dRight{0%,55%,100%{opacity:.2;transform:translateY(0)} 54%{opacity:1;transform:translateY(-4px)}}
 
 /* ── TOOL ACTIVITY (editorial timeline) ── */
-.tool-activity{display:flex;flex-direction:column;margin:4px 0 10px;padding-left:20px;position:relative}
-.tool-activity::before{content:'';position:absolute;left:5px;top:14px;bottom:14px;width:1px;background:linear-gradient(180deg,var(--border-bright),var(--border),transparent)}
-.tool-item{display:flex;flex-direction:column;gap:3px;padding:4px 0 7px 16px;position:relative;transition:opacity .2s var(--ease);animation:toolIn .25s var(--ease-out)}
+.tool-activity{display:flex;flex-direction:column;margin:6px 0 4px;padding-left:16px;position:relative}
+.tool-activity::before{content:'';position:absolute;left:3px;top:10px;bottom:10px;width:1px;background:var(--border)}
+.tool-item{display:flex;flex-direction:column;gap:2px;padding:3px 0 5px 14px;position:relative;transition:opacity .2s var(--ease);animation:toolIn .22s var(--ease-out)}
 @keyframes toolIn{from{opacity:0;transform:translateX(-4px)}to{opacity:1;transform:translateX(0)}}
 .tool-item.has-file{cursor:pointer}
 .tool-item.has-file:hover .tool-name{color:var(--gold)}
 .tool-item.has-file:hover .tool-file{color:var(--gold-bright)}
 /* Dot */
-.tool-item::before{content:'';position:absolute;left:-5px;top:8px;width:11px;height:11px;border-radius:50%;background:var(--surface2);border:2px solid var(--border-bright);z-index:1;transition:background .35s var(--ease),border-color .35s var(--ease),box-shadow .35s var(--ease)}
-.tool-item.running::before{background:var(--gold);border-color:var(--gold-bright);box-shadow:0 0 0 3px var(--gold-glow),0 0 12px var(--gold-glow);animation:dotPulse 1.4s var(--ease) infinite}
-@keyframes dotPulse{0%,100%{box-shadow:0 0 0 3px var(--gold-glow),0 0 12px var(--gold-glow)}50%{box-shadow:0 0 0 5px rgba(196,161,101,.25),0 0 18px var(--gold-glow)}}
-.tool-item.done::before{background:var(--success);border-color:var(--success);box-shadow:0 0 0 2px rgba(39,174,96,.18)}
-.tool-item.error::before{background:var(--stop);border-color:var(--stop);box-shadow:0 0 0 2px rgba(192,57,43,.2)}
+.tool-item::before{content:'';position:absolute;left:-5px;top:9px;width:8px;height:8px;border-radius:50%;background:var(--surface2);border:1.5px solid var(--border-bright);z-index:1;transition:background .3s var(--ease),border-color .3s var(--ease),box-shadow .3s var(--ease)}
+.tool-item.running::before{background:var(--gold);border-color:var(--gold);box-shadow:0 0 6px rgba(196,161,101,.5);animation:dotGlow 1.6s ease-in-out infinite}
+.tool-item.done::before{background:var(--success);border-color:var(--success)}
+.tool-item.error::before{background:var(--stop);border-color:var(--stop)}
 .tool-name{font-family:var(--sans);font-size:12.5px;color:var(--text);transition:color .2s var(--ease);line-height:1.45;font-weight:400;letter-spacing:-.003em}
 .tool-action{font-weight:600;color:var(--text)}
 .tool-file{color:var(--gold-dim);font-weight:400;margin-left:6px;font-family:var(--mono);font-size:11.5px;transition:color .2s var(--ease)}

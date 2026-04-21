@@ -14,9 +14,9 @@ from web import web_search, web_fetch
 
 READ_ONLY_TOOLS = {
     "read_file", "list_directory", "search_files", "search_content",
-    "web_search", "web_fetch", "todo_write",
-    "git_status", "git_log_summary", "git_diff_tool",
+    "todo_write", "git_status", "git_log_summary", "git_diff_tool",
 }
+WEB_TOOLS = {"web_search", "web_fetch"}
 WRITE_TOOLS = {
     "write_file", "edit_file", "multi_edit", "run_command",
     "execute_code", "git_commit", "git_create_branch", "git_checkout", "git_push",
@@ -24,10 +24,14 @@ WRITE_TOOLS = {
 
 
 def filter_tools_for_mode(mode: str) -> list:
-    """Plan mode: only read-only tools. Ask/auto: all tools."""
-    if mode == "plan":
-        return [t for t in TOOL_SCHEMAS if t["function"]["name"] in READ_ONLY_TOOLS]
-    return TOOL_SCHEMAS
+    # ask: only local filesystem reads — no web, no writes
+    # plan: same as ask
+    # auto: all tools
+    if mode in ("ask", "plan"):
+        allowed = READ_ONLY_TOOLS
+    else:
+        allowed = READ_ONLY_TOOLS | WEB_TOOLS | WRITE_TOOLS
+    return [t for t in TOOL_SCHEMAS if t["function"]["name"] in allowed]
 
 
 # ── Tool schemas (Ollama function-calling format) ────────────────────────────
