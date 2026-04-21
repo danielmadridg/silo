@@ -1,13 +1,30 @@
 {
   "name": "silo-local-ai",
-  "displayName": "Silo — Local AI Coding Assistant",
-  "description": "Claude Code equivalent powered by local LLM (Qwen2.5-Coder)",
-  "version": "1.0.4",
+  "displayName": "Silo — Local & Cloud AI Coding Assistant",
+  "description": "Agentic coding assistant for VS Code. Local Ollama or OpenAI / Anthropic / Gemini. Modes, tools, memory, slash commands.",
+  "version": "1.1.0",
   "publisher": "danielmadridg",
+  "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/danielmadridg/silo" },
+  "bugs": { "url": "https://github.com/danielmadridg/silo/issues" },
+  "homepage": "https://github.com/danielmadridg/silo#readme",
   "icon": "silologo.png",
   "engines": { "vscode": "^1.90.0" },
-  "categories": ["AI", "Programming Languages", "Other"],
+  "categories": ["AI", "Chat", "Programming Languages", "Other"],
+  "keywords": [
+    "ai",
+    "chat",
+    "copilot",
+    "ollama",
+    "local",
+    "openai",
+    "claude",
+    "anthropic",
+    "gemini",
+    "agent",
+    "assistant",
+    "qwen"
+  ],
   "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
   "contributes": {
@@ -60,6 +77,11 @@
           "type": "number",
           "default": 5,
           "description": "Number of open files to include in context"
+        },
+        "silo.backendPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the Silo backend directory (folder containing main.py). Leave empty to auto-detect."
         }
       }
     }

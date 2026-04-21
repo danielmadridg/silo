@@ -1,89 +1,105 @@
-# Silo — Local AI Coding Assistant
+# Silo — Local & Cloud AI Coding Assistant
 
-A fully local AI coding assistant for VS Code. No API keys, no cloud, no data leaving your machine.
+Agentic coding assistant for VS Code. Runs fully local on [Ollama](https://ollama.com) or routes to **OpenAI**, **Anthropic Claude**, and **Google Gemini**. Your keys never leave your machine.
 
-Powered by [Ollama](https://ollama.com) + Qwen2.5-Coder.
+![Silo](silologo.png)
+
+---
+
+## Why Silo
+
+- **Private by default** — local Ollama backend. Nothing leaves your machine unless you pick a cloud provider.
+- **Agentic** — reads, writes, edits, runs shell commands, tracks todos, remembers context.
+- **Multi-provider** — pick a cloud model per chat. API keys are stored in VS Code's encrypted SecretStorage.
+- **Modes** — `Ask` (chat only), `Plan` (read-only tools), `Auto` (full access).
 
 ---
 
 ## Requirements
 
-- [Ollama](https://ollama.com/download) installed and running
-- A capable GPU (8GB+ VRAM recommended) or fast CPU
-- The Silo backend running locally
+- VS Code `1.90+`
+- Python `3.10+` (for the local backend)
+- [Ollama](https://ollama.com/download) if you want the local model path
+- Optional: API keys for OpenAI / Anthropic / Gemini
 
 ---
 
-## Setup (one time)
+## Setup
 
-### 1. Install Ollama
+### 1. Install the extension
 
-Download from [ollama.com/download](https://ollama.com/download) and install it.
+Search **Silo** in the VS Code Extensions panel, or install the `.vsix` directly.
 
-### 2. Pull the model
-
-Open a terminal and run:
-
-```bash
-ollama pull qwen2.5-coder:32b
-```
-
-> Lower VRAM? Use a smaller model instead:
-> ```bash
-> ollama pull qwen2.5-coder:14b
-> ```
-
-### 3. Download and start the backend
-
-Clone the repo and start the backend:
+### 2. Start the backend
 
 ```bash
 git clone https://github.com/danielmadridg/silo.git
-cd silo
+cd silo/backend
 
-# Create virtual environment
-cd backend
 python -m venv .venv
-
 # Windows
 .venv\Scripts\activate
-# Mac/Linux
+# macOS / Linux
 source .venv/bin/activate
 
 pip install fastapi "uvicorn[standard]" httpx pydantic sse-starlette aiofiles
 uvicorn main:app --host 127.0.0.1 --port 8942
 ```
 
-> On Windows you can also just double-click `start-backend.bat`
+On Windows you can double-click `start-backend.bat`.
 
-### 4. Install the extension
+### 3. (Optional) Pull a local model
 
-Install from the VS Code Marketplace by searching **Silo** or from the Extensions panel.
+```bash
+ollama pull qwen2.5-coder:14b
+```
+
+Edit `backend/config.py` to change the default model.
+
+### 4. (Optional) Add a cloud model
+
+Open the Silo sidebar → click the model picker → **+ Add AI** → pick OpenAI / Anthropic / Gemini, paste your API key.
 
 ---
 
 ## Features
 
-- **Chat panel** — ask anything about your code with full project context
-- **Inline completions** — Tab to accept AI suggestions as you type
-- **File analysis** — detect bugs, performance issues and get refactoring suggestions
-- **Inline refactoring** — select code, give an instruction, changes apply directly in the editor
-- **Code explanation** — select any code and ask Silo to explain it
-
----
-
-## Usage
-
-| Command | Description |
+### Modes
+| Mode | What it does |
 |---|---|
-| `Silo: Open Chat` | Opens the chat panel |
-| `Silo: Analyze Current File` | Analyzes the active file |
-| `Silo: Refactor Selection` | Refactors selected code |
-| `Silo: Explain Selection` | Explains selected code |
+| **Ask** | Conversational. No tool use. |
+| **Plan** | Read-only tools — read files, grep, list dirs. Great for exploration. |
+| **Auto** | Full agent — read, write, edit, run commands, manage todos. |
 
-Access commands via `Ctrl+Shift+P` (or `Cmd+Shift+P` on Mac).
+### Slash commands
+- `/clear` — clear the current chat
+- `/new` — start a new chat
+- `/compact` — summarize the current chat to save context
+- `/mode ask|plan|auto` — switch mode
 
-Right-click on selected code for quick access to Refactor and Explain.
+### Cloud providers
+Bring your own key. Supported:
+- **OpenAI** (GPT-4o, GPT-4.1, o-series)
+- **Anthropic** (Claude 4.x family)
+- **Google** (Gemini 2.x family)
+
+Keys are stored in `context.secrets` (VS Code SecretStorage — OS keychain on Mac/Windows/Linux). Never written to disk as plain text.
+
+### Workspace context
+Silo automatically includes:
+- The active file + open tabs
+- VS Code diagnostics (problems)
+- `git diff` (unstaged changes)
+- `SILO.md` or `CLAUDE.md` memory from your workspace root
+
+### Multi-chat history
+The sidebar keeps your previous chats. Empty chats are discarded. Long chats auto-compact.
+
+### Inline tools
+- **Analyze file** — full review of the active file
+- **Refactor selection** — right-click → Silo: Refactor Selection
+- **Explain selection** — right-click → Silo: Explain Selection
+- **Inline completions** — Tab to accept
 
 ---
 
@@ -91,16 +107,25 @@ Right-click on selected code for quick access to Refactor and Explain.
 
 | Setting | Default | Description |
 |---|---|---|
-| `silo.backendUrl` | `http://127.0.0.1:8942` | Silo backend URL |
-| `silo.contextFiles` | `5` | Number of open files included in context |
+| `silo.backendUrl` | `http://127.0.0.1:8942` | Backend URL (bind to loopback by default) |
+| `silo.contextFiles` | `5` | Open files included in context |
+| `silo.backendPath` | `""` | Path to the backend folder. Leave empty for auto-detect |
 
-To use a different model, edit `backend/config.py`:
-```python
-MODEL_NAME = "qwen2.5-coder:14b"  # or any model in Ollama
-```
+---
+
+## Security
+
+- Backend binds to `127.0.0.1` only.
+- API keys live in VS Code SecretStorage (OS keychain).
+- No telemetry. No analytics. No outbound calls except to your configured provider.
+- Source on GitHub — audit anything.
 
 ---
 
 ## Source
 
 [github.com/danielmadridg/silo](https://github.com/danielmadridg/silo)
+
+## License
+
+MIT — see [LICENSE](LICENSE).

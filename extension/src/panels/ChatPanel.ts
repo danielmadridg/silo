@@ -39,7 +39,7 @@ export class ChatPanel {
     await streamChat(text, this.history.slice(0, -1), fileContext, (token) => {
       full += token;
       this.panel.webview.postMessage({ type: 'token', token });
-    });
+    }, {});
     this.history.push({ role: 'assistant', content: full });
     this.panel.webview.postMessage({ type: 'done' });
   }

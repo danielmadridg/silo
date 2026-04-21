@@ -1,5 +1,13 @@
 .vscode/**
+.vscode-test/**
 node_modules/**
 src/**
 tsconfig.json
 .gitignore
+.yarnrc
+**/*.map
+**/*.ts
+*.vsix
+out/**/*.map
+out/debug_webview.html
+**/.DS_Store

@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
+import httpx
 from model import check_model
 import config
 from routers import chat, completions, analysis
@@ -49,3 +50,25 @@ class ModelSwitch(BaseModel):
 async def set_model(body: ModelSwitch):
     config.MODEL_NAME = body.model
     return {"model": config.MODEL_NAME}
+
+
+@app.post("/warmup")
+async def warmup():
+    """
+    Send a minimal 1-token request to Ollama to force model weights into VRAM.
+    Called automatically by the VS Code extension on startup so the first real
+    message is instant instead of waiting 60-120 s for model load.
+    """
+    opts = config.get_options(turbo=False)
+    opts["num_predict"] = 1   # generate just 1 token — enough to load weights
+    try:
+        async with httpx.AsyncClient(base_url=config.OLLAMA_BASE_URL, timeout=180.0) as client:
+            await client.post("/api/chat", json={
+                "model": config.MODEL_NAME,
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": False,
+                "options": opts,
+            })
+        return {"status": "warm"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
