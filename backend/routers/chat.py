@@ -10,6 +10,7 @@ from tools import filter_tools_for_mode, execute_tool, execute_tool_async
 from memory import load_memory
 from summarize import summarize_history, should_compact
 from providers import stream_cloud
+from rag import retrieve, invalidate as rag_invalidate
 
 router = APIRouter()
 
@@ -143,6 +144,10 @@ def _agentic_stream(messages: list[dict], turbo: bool, workspace: str, mode: str
 
                         yield f"data: {json.dumps({'tool_result': fn_name, 'result': result[:1000], 'success': not result.startswith('Error:')})}\n\n"
 
+                        # Invalidate RAG cache after any file write so next query gets fresh index
+                        if fn_name in ("write_file", "edit_file", "multi_edit") and workspace:
+                            rag_invalidate(workspace)
+
                         current_messages.append({
                             "role": "tool",
                             "content": result
@@ -170,6 +175,9 @@ async def chat(req: ChatRequest):
 
     memory = load_memory(req.workspace)
 
+    # RAG: retrieve relevant workspace snippets for the user's message
+    rag_context = retrieve(req.message, req.workspace)
+
     messages = build_chat_messages(
         history=history,
         user_message=req.message,
@@ -178,6 +186,7 @@ async def chat(req: ChatRequest):
         memory=memory,
         diagnostics=req.diagnostics,
         git_diff=req.git_diff,
+        rag_context=rag_context,
     )
 
     # Cloud provider: stream directly from OpenAI / Anthropic / Gemini.

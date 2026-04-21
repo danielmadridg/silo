@@ -2,38 +2,42 @@ import os
 
 # Ollama backend
 OLLAMA_BASE_URL = "http://127.0.0.1:11434"
-MODEL_NAME = "qwen3:14b"
+MODEL_NAME = "silo-qwen"   # custom model with tuned Modelfile (fallback: qwen3:14b)
 
 MAX_TOKENS_CHAT = 4096
 MAX_TOKENS_COMPLETE = 256
 PORT = 8942
 HOST = "127.0.0.1"
 
-# ── Performance options (applied to every Ollama request) ──────────────────
-# These extract maximum performance from any hardware.
+# ── Base options ───────────────────────────────────────────────────────────────
 BASE_OPTIONS: dict = {
-    "num_gpu":   99,      # offload ALL layers to GPU (99 = all)
-    "low_vram":  False,   # don't throttle VRAM usage
-    "use_mmap":  True,    # memory-mapped model files → faster cold load
-    # use_mlock omitted — requires elevated privileges on Windows; Ollama handles it internally
-    "f16_kv":    True,    # float16 KV cache → 2× memory savings, same quality
-    "num_batch": 512,     # prompt-eval batch size → higher = faster prefill
-    "num_ctx":   16384,   # context window — must fit system prompt + history + user msg
-    "num_predict": MAX_TOKENS_CHAT,
-    "temperature": 0.2,
-    "top_p": 0.95,
-    "repeat_penalty": 1.1,
+    "num_gpu":        99,      # offload all layers to GPU
+    "low_vram":       False,
+    "use_mmap":       True,    # memory-mapped load — faster cold start
+    "f16_kv":         True,    # fp16 KV cache — 2× savings, same quality
+    "num_batch":      512,
+    "num_ctx":        16384,
+    "num_predict":    MAX_TOKENS_CHAT,
+    # Sampling — tuned for code precision
+    "temperature":    0.25,    # lower = more deterministic code
+    "top_k":          40,      # sample from top 40 tokens (was default 20 — too greedy)
+    "top_p":          0.92,
+    "repeat_penalty": 1.12,    # penalise repeated phrases more strongly
+    "repeat_last_n":  128,     # look back 128 tokens for repetition
+    "tfs_z":          1.0,     # tail-free sampling (1.0 = off; tune to 0.95 if verbose)
+    "typical_p":      1.0,     # locally typical sampling (1.0 = off)
 }
 
-# ── Turbo options (added on top of BASE_OPTIONS when turbo=True) ───────────
-# Burns everything: all CPU threads, larger context, max batch size.
+# ── Turbo options — maximum performance ───────────────────────────────────────
 _cpu_count = os.cpu_count() or 4
 TURBO_OPTIONS: dict = {
-    "num_thread": _cpu_count,   # every logical CPU core
-    "num_ctx":    32768,         # max context window (uses more VRAM)
-    "num_batch":  1024,          # double the prefill batch
-    "num_predict": 8192,         # allow much longer outputs
-    "temperature": 0.15,         # slightly tighter for precision
+    "num_thread":     _cpu_count,
+    "num_ctx":        32768,
+    "num_batch":      1024,
+    "num_predict":    8192,
+    "temperature":    0.15,    # near-deterministic for large refactors
+    "top_k":          30,
+    "repeat_penalty": 1.15,
 }
 
 def get_options(turbo: bool = False) -> dict:
