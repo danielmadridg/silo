@@ -1974,7 +1974,7 @@ window.addEventListener('message', e => {
             if (ml) ml.textContent = 'Auto';
             if (mi && window.MODE_ICONS && window.MODE_ICONS.auto) mi.innerHTML = window.MODE_ICONS.auto;
             document.querySelectorAll('.mode-item').forEach(el => {
-              (el as HTMLElement).classList.toggle('active', (el as HTMLElement).dataset.mode === 'auto');
+              el.classList.toggle('active', el.dataset.mode === 'auto');
             });
             btn.textContent = '✓ Switched to Auto';
             btn.disabled = true;
