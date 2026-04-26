@@ -1246,7 +1246,7 @@ const MODE_ICONS = {
   auto: '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>',
   plan: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
 };
-(window as any).MODE_ICONS = MODE_ICONS;
+window.MODE_ICONS = MODE_ICONS;
 
 // -- Helpers --
 function esc(s) {
@@ -1338,7 +1338,7 @@ function renderAskUser(payload, container) {
 
 function submitAskUserAnswer(answer, card) {
   card.classList.add('ask-resolved');
-  card.querySelectorAll('button, input').forEach(el => { (el as any).disabled = true; });
+  card.querySelectorAll('button, input').forEach(el => { el.disabled = true; });
   input.value = answer;
   send();
 }
@@ -1972,12 +1972,12 @@ window.addEventListener('message', e => {
             const ml = document.getElementById('mode-label');
             const mi = document.getElementById('mode-icon');
             if (ml) ml.textContent = 'Auto';
-            if (mi && (window as any).MODE_ICONS?.auto) mi.innerHTML = (window as any).MODE_ICONS.auto;
+            if (mi && window.MODE_ICONS && window.MODE_ICONS.auto) mi.innerHTML = window.MODE_ICONS.auto;
             document.querySelectorAll('.mode-item').forEach(el => {
               (el as HTMLElement).classList.toggle('active', (el as HTMLElement).dataset.mode === 'auto');
             });
             btn.textContent = '✓ Switched to Auto';
-            (btn as HTMLButtonElement).disabled = true;
+            btn.disabled = true;
           };
           currentWrap.appendChild(btn);
         }
