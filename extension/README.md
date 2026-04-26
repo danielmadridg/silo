@@ -48,12 +48,21 @@ uvicorn main:app --host 127.0.0.1 --port 8942
 
 On Windows you can double-click `start-backend.bat`.
 
-### 3. (Optional) Pull a local model
+### 3. (Optional) Pull local models
+
+Silo ships with two curated local models:
 
 ```bash
-ollama pull qwen2.5-coder:14b
+# Primary — Qwen 3.6 27B (best quality, ~20 tok/s)
+ollama pull qwen3.6:27b
+ollama create silo-qwen -f backend/Modelfile-qwen
+
+# Balanced — Microsoft Phi-4 14B (~40 tok/s, 84.8% benchmarks)
+ollama pull phi4
+ollama create silo-phi -f backend/Modelfile-phi
 ```
 
+Both use tuned sampling params (temperature 0.25, top_k 40, repeat_penalty 1.12).  
 Edit `backend/config.py` to change the default model.
 
 ### 4. (Optional) Add a cloud model

@@ -2,7 +2,7 @@
   "name": "silo-local-ai",
   "displayName": "Silo — Local & Cloud AI Coding Assistant",
   "description": "Agentic coding assistant for VS Code. Local Ollama or OpenAI / Anthropic / Gemini. Modes, tools, memory, slash commands.",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "publisher": "danielmadridg",
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/danielmadridg/silo" },

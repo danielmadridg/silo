@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0 — 2026-04-26
+
+### Changed
+- **Local models** — Upgraded default from Qwen3 14B to **Qwen3.6 27B** (`silo-qwen`). Significantly better reasoning and coding benchmarks.
+- **Added Phi-4 14B** — Microsoft Phi-4 14B (`silo-phi`) as a second local option. ~40 tok/s, 84.8% benchmark score. Great balance of speed and quality.
+- **Model picker** — Streamlined to two curated local models. Removed legacy qwen2.5 and llama3.1 entries.
+
+---
+
 ## 1.2.0 — 2026-04-21
 
 ### Added

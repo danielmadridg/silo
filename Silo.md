@@ -4,11 +4,11 @@
 
 | Component | Value |
 |---|---|
-| **Local model** | `silo-qwen` (custom Ollama model based on **Qwen3 14B**) |
+| **Local model** | `silo-qwen` (custom Ollama model based on **Qwen3.6 27B**) |
 | **Runtime** | Ollama |
 | **Backend** | FastAPI + Python (port 8942) |
 | **Extension** | VS Code TypeScript webview |
-| **Version** | 1.1.0 |
+| **Version** | 1.2.0 |
 
 ## Architecture
 

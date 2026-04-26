@@ -3,9 +3,8 @@ import { streamChat, streamAnalysis, compactHistory, streamReview } from '../bac
 import { collectProjectContext, getActiveFileInfo } from '../contextCollector';
 
 const MODELS = [
-  { id: 'qwen3:14b',          label: 'Qwen 3 14B',          company: 'Alibaba', logoFile: 'qwen.svg',   tier: 'Advanced', kind: 'local' },
-  { id: 'qwen2.5-coder:32b',  label: 'Qwen 2.5 Coder 32B',  company: 'Alibaba', logoFile: 'qwen.svg',   tier: 'Balanced', kind: 'local' },
-  { id: 'llama3.1:8b',        label: 'Llama 3.1 8B',         company: 'Meta',    logoFile: 'ollama.svg', tier: 'Fast',     kind: 'local' },
+  { id: 'silo-qwen', label: 'Qwen 3.6 27B', company: 'Alibaba',    logoFile: 'qwen.svg', tier: 'Advanced', kind: 'local' },
+  { id: 'silo-phi',  label: 'Phi-4 14B',    company: 'Microsoft',  logoFile: 'phi.svg',  tier: 'Balanced', kind: 'local' },
 ];
 
 interface CloudModel {
@@ -33,7 +32,7 @@ const PROVIDER_META: Record<string, { logoFile: string; company: string }> = {
 export class SiloChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'silo.chatView';
   private _view?: vscode.WebviewView;
-  private _currentModel = 'qwen3:14b';
+  private _currentModel = 'silo-qwen';
   // Sidebar-only state
   private _sidebarChatId: string | null = null;
   private _sidebarDraft: Chat | null = null;   // in-memory chat not yet persisted
