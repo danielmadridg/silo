@@ -905,6 +905,21 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;background:ra
 .files-modified{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10.5px;color:var(--muted);background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:4px 10px;margin-top:6px;letter-spacing:.02em}
 .files-modified-count{color:var(--gold);font-weight:600}
 .files-modified::before{content:'';width:5px;height:5px;border-radius:50%;background:var(--gold);box-shadow:0 0 6px var(--gold-glow)}
+/* Plan mode: ask_user card */
+.ask-user-card{margin-top:12px;padding:14px 16px;background:rgba(196,161,101,.07);border:1px solid rgba(196,161,101,.28);border-radius:10px}
+.ask-user-card.ask-resolved{opacity:.45;pointer-events:none}
+.ask-user-q{font-size:12.5px;color:var(--text-primary);margin-bottom:10px;font-weight:500;font-family:var(--sans)}
+.ask-user-opts{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.ask-opt-btn{padding:5px 13px;border-radius:20px;font-size:11.5px;background:rgba(196,161,101,.1);border:1px solid rgba(196,161,101,.32);color:var(--gold);cursor:pointer;transition:background .15s;font-family:var(--sans)}
+.ask-opt-btn:hover{background:rgba(196,161,101,.24)}
+.ask-free-row{display:flex;gap:6px}
+.ask-free-input{flex:1;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);border-radius:6px;padding:5px 10px;font-size:11.5px;color:var(--text-primary);outline:none;font-family:var(--sans)}
+.ask-free-input:focus{border-color:rgba(196,161,101,.45)}
+.ask-free-send{padding:5px 13px;border-radius:6px;background:rgba(196,161,101,.18);border:1px solid rgba(196,161,101,.38);color:var(--gold);cursor:pointer;font-family:var(--sans)}
+/* Plan mode: switch-to-auto button */
+.switch-auto-btn{display:inline-flex;align-items:center;gap:6px;margin-top:14px;padding:7px 16px;border-radius:8px;background:rgba(196,161,101,.13);border:1px solid rgba(196,161,101,.4);color:var(--gold);cursor:pointer;font-size:12.5px;font-weight:500;font-family:var(--sans);transition:background .15s;letter-spacing:.01em}
+.switch-auto-btn:hover{background:rgba(196,161,101,.26)}
+.switch-auto-btn:disabled{opacity:.45;cursor:default}
 /* Code blocks */
 .code-block{position:relative;background:var(--bg-deep);border:1px solid var(--border);border-radius:10px;margin:8px 0;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.25)}
 .code-block:hover{border-color:var(--border-bright)}
@@ -1231,6 +1246,7 @@ const MODE_ICONS = {
   auto: '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>',
   plan: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
 };
+(window as any).MODE_ICONS = MODE_ICONS;
 
 // -- Helpers --
 function esc(s) {
@@ -1280,6 +1296,51 @@ function filePathFromArgs(tool, args) {
 }
 function scrollBottom() {
   messages.scrollTop = messages.scrollHeight;
+}
+
+function renderAskUser(payload, container) {
+  const card = document.createElement('div');
+  card.className = 'ask-user-card';
+
+  const q = document.createElement('div');
+  q.className = 'ask-user-q';
+  q.textContent = payload.question || '';
+  card.appendChild(q);
+
+  const opts = document.createElement('div');
+  opts.className = 'ask-user-opts';
+  (payload.options || []).forEach(opt => {
+    const btn = document.createElement('button');
+    btn.className = 'ask-opt-btn';
+    btn.textContent = opt;
+    btn.onclick = () => submitAskUserAnswer(opt, card);
+    opts.appendChild(btn);
+  });
+  card.appendChild(opts);
+
+  const freeRow = document.createElement('div');
+  freeRow.className = 'ask-free-row';
+  const inp = document.createElement('input');
+  inp.type = 'text';
+  inp.placeholder = 'Or type a custom answer...';
+  inp.className = 'ask-free-input';
+  const sendBtn = document.createElement('button');
+  sendBtn.className = 'ask-free-send';
+  sendBtn.textContent = '→';
+  sendBtn.onclick = () => { if (inp.value.trim()) submitAskUserAnswer(inp.value.trim(), card); };
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter' && inp.value.trim()) submitAskUserAnswer(inp.value.trim(), card); });
+  freeRow.appendChild(inp);
+  freeRow.appendChild(sendBtn);
+  card.appendChild(freeRow);
+
+  container.appendChild(card);
+}
+
+function submitAskUserAnswer(answer, card) {
+  card.classList.add('ask-resolved');
+  card.querySelectorAll('button, input').forEach(el => { (el as any).disabled = true; });
+  input.value = answer;
+  send();
 }
 
 let todoPanelEl = null;
@@ -1859,6 +1920,13 @@ window.addEventListener('message', e => {
       renderTodos(msg.todos || []);
       break;
     }
+    case 'ask_user': {
+      if (currentWrap && msg.ask_user) {
+        renderAskUser(msg.ask_user, currentWrap);
+        scrollBottom();
+      }
+      break;
+    }
     case 'tokens': {
       // Store for display at 'done'
       if (msg.tokens) {
@@ -1891,7 +1959,29 @@ window.addEventListener('message', e => {
         badge.innerHTML = '<span class="files-modified-count">' + filesModified.size + '</span> files modified';
         currentWrap.appendChild(badge);
       }
-      if (currentWrap) currentWrap.classList.remove('streaming');
+      if (currentWrap) {
+        currentWrap.classList.remove('streaming');
+        // Plan mode hand-off button
+        const raw = currentWrap.querySelector('.msg-bubble')?.textContent ?? '';
+        if (raw.includes('→ Switch to Auto mode')) {
+          const btn = document.createElement('button');
+          btn.className = 'switch-auto-btn';
+          btn.textContent = '→ Switch to Auto mode to implement';
+          btn.onclick = () => {
+            currentMode = 'auto';
+            const ml = document.getElementById('mode-label');
+            const mi = document.getElementById('mode-icon');
+            if (ml) ml.textContent = 'Auto';
+            if (mi && (window as any).MODE_ICONS?.auto) mi.innerHTML = (window as any).MODE_ICONS.auto;
+            document.querySelectorAll('.mode-item').forEach(el => {
+              (el as HTMLElement).classList.toggle('active', (el as HTMLElement).dataset.mode === 'auto');
+            });
+            btn.textContent = '✓ Switched to Auto';
+            (btn as HTMLButtonElement).disabled = true;
+          };
+          currentWrap.appendChild(btn);
+        }
+      }
       setStreaming(false);
       rawAccum = ''; thinkStatus = 'idle'; toolActivityEl = null; activeToolItem = null;
       currentWrap = null; filesModified.clear();

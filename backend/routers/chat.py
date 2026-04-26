@@ -127,6 +127,19 @@ def _agentic_stream(messages: list[dict], turbo: bool, workspace: str, mode: str
                         else:
                             result = execute_tool(fn_name, fn_args, workspace)
 
+                        # Special: ask_user pauses the loop and sends an interactive question to the UI
+                        if isinstance(result, str) and result.startswith("__ASK_USER__"):
+                            try:
+                                payload = json.loads(result[len("__ASK_USER__"):])
+                            except Exception:
+                                payload = {"question": result, "options": []}
+                            yield f"data: {json.dumps({'ask_user': payload})}\n\n"
+                            current_messages.append({
+                                "role": "tool",
+                                "content": "(paused — waiting for user's answer to the clarifying question)"
+                            })
+                            return
+
                         # Special: todo_write returns a marker that we forward as a structured event
                         if isinstance(result, str) and result.startswith("__TODOS__"):
                             try:

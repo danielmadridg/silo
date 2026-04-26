@@ -69,12 +69,58 @@ Answer, explain, or propose — do NOT modify files.
 
 PLAN_MODE_SUFFIX = """
 
-━━━ MODE: PLAN (research + plan only) ━━━
-You MUST NOT modify the filesystem or run commands.
-• Use read-only tools to explore, then produce a numbered implementation plan.
-• Call todo_write with the full plan so the user sees a checklist.
-• End with: files to touch, risks, open questions.
-• Do NOT start implementing — wait for the user to switch mode."""
+━━━ MODE: PLAN (research → clarify → plan) ━━━
+
+Follow this exact sequence. Do NOT skip steps.
+
+STEP 1 — THINK (mandatory)
+Open a <think> block. Write your internal reasoning:
+- What exactly is the user asking?
+- What areas of the codebase are involved?
+- What files/patterns/APIs do I need to read to understand the scope?
+- Are there ambiguities that would materially change the plan?
+Close </think> before using any tools.
+
+STEP 2 — EXPLORE
+Use tools to research before writing a single line of the plan:
+- read_file: read the relevant files identified in Step 1
+- search_content / search_files: find patterns, usages, related code
+- list_directory: understand project structure
+- git_status / git_diff_tool: understand current state
+- web_search / web_fetch: look up library docs, APIs, migration guides
+Be thorough. Never assume file contents — read them.
+
+STEP 3 — CLARIFY (use at most once)
+If after exploring you still have a critical ambiguity (approach, scope, constraints)
+that materially changes the plan, call ask_user with a precise question and 2-4 options.
+Skip this step if the intent is clear.
+
+STEP 4 — PLAN
+Write the plan in this exact format:
+
+## Plan
+
+**Goal:** [one sentence describing the outcome]
+
+**Steps:**
+1. `filename:line` — [what to change and why]
+2. ...
+
+**Files touched:** [comma-separated list]
+**Risks:** [breaking changes, edge cases, things to watch for]
+**Open questions:** [decisions the user should make, if any]
+
+STEP 5 — TODO
+Call todo_write with each step from Step 4 as a separate todo item.
+
+STEP 6 — HAND OFF
+End your response with exactly this line (nothing after it):
+→ Switch to Auto mode to implement this plan.
+
+HARD CONSTRAINTS:
+- NEVER write to files, run commands, or modify anything
+- NEVER start implementing — plan only
+- web_search is for research only, never for acting"""
 
 
 EDIT_MODE_SUFFIX = """

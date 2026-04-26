@@ -15,8 +15,10 @@ from web import web_search, web_fetch
 READ_ONLY_TOOLS = {
     "read_file", "list_directory", "search_files", "search_content",
     "todo_write", "git_status", "git_log_summary", "git_diff_tool",
+    "ask_user",
 }
 WEB_TOOLS = {"web_search", "web_fetch"}
+PLAN_WEB_TOOLS = {"web_search", "web_fetch"}
 WRITE_TOOLS = {
     "write_file", "edit_file", "multi_edit", "run_command",
     "execute_code", "git_commit", "git_create_branch", "git_checkout", "git_push",
@@ -24,11 +26,10 @@ WRITE_TOOLS = {
 
 
 def filter_tools_for_mode(mode: str) -> list:
-    # ask: only local filesystem reads — no web, no writes
-    # plan: same as ask
-    # auto: all tools
-    if mode in ("ask", "plan"):
+    if mode == "ask":
         allowed = READ_ONLY_TOOLS
+    elif mode == "plan":
+        allowed = READ_ONLY_TOOLS | PLAN_WEB_TOOLS
     else:
         allowed = READ_ONLY_TOOLS | WEB_TOOLS | WRITE_TOOLS
     return [t for t in TOOL_SCHEMAS if t["function"]["name"] in allowed]
@@ -320,6 +321,25 @@ TOOL_SCHEMAS = [
                 "properties": {
                     "set_upstream": {"type": "boolean", "description": "Set upstream tracking branch (use for new branches)"}
                 }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ask_user",
+            "description": "Ask the user a clarifying question before planning. Use when you need critical information to make a good plan — approach choice, scope boundaries, constraints. Provide 2-4 concrete options. Use at most once per planning session.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "description": "The clarifying question to ask"},
+                    "options": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "2-4 concrete options the user can choose from"
+                    }
+                },
+                "required": ["question", "options"]
             }
         }
     },
@@ -663,6 +683,8 @@ def execute_tool(name: str, args: dict, workspace: str) -> str:
             return asyncio.get_event_loop().run_until_complete(tool_web_fetch(args.get("url", "")))
         except RuntimeError:
             return asyncio.run(tool_web_fetch(args.get("url", "")))
+    if name == "ask_user":
+        return f"__ASK_USER__{json.dumps({'question': args.get('question', ''), 'options': args.get('options', [])})}"
     if name == "todo_write":
         return tool_todo_write(args.get("todos", []) or [])
     # Git tools
