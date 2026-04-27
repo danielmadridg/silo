@@ -31,6 +31,7 @@ class ChatRequest(BaseModel):
     diagnostics: str = ""
     git_diff: str = ""
     local_model: str = ""       # local Ollama model override (e.g. silo-phi)
+    thinking: bool = True       # enable Qwen thinking mode
     # Cloud provider routing — when provider is set, skip Ollama + tools entirely
     provider: str = ""          # "" | openai | anthropic | gemini
     remote_model: str = ""      # model id for the cloud provider (e.g. gpt-4o)
@@ -72,7 +73,7 @@ def _stream_ollama(messages: list[dict], turbo: bool, timeout: float = 300.0, mo
     return generate()
 
 
-def _agentic_stream(messages: list[dict], turbo: bool, workspace: str, mode: str, timeout: float = 300.0):
+def _agentic_stream(messages: list[dict], turbo: bool, workspace: str, mode: str, thinking: bool = True, timeout: float = 300.0):
     """
     Agentic loop with tool use.
     Streams tool_call / tool_result / todos / token events.
@@ -98,7 +99,7 @@ def _agentic_stream(messages: list[dict], turbo: bool, workspace: str, mode: str
                         "stream": True,
                         "options": opts,
                         "tools": tools,
-                        "think": True,
+                        "think": thinking,
                     }) as streamed:
                         streamed.raise_for_status()
                         async for line in streamed.aiter_lines():
@@ -247,7 +248,7 @@ async def chat(req: ChatRequest):
         )
 
     return StreamingResponse(
-        _agentic_stream(messages, req.turbo, req.workspace, req.mode),
+        _agentic_stream(messages, req.turbo, req.workspace, req.mode, req.thinking),
         media_type="text/event-stream"
     )
 

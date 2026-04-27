@@ -100,6 +100,7 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
           if (isStreaming) return;
           if (msg.turbo !== undefined) turboMode = msg.turbo;
           const mode = (msg.mode === 'ask' || msg.mode === 'plan' || msg.mode === 'auto') ? msg.mode : 'auto';
+          const thinking: boolean = msg.thinking !== false;
           let chat = this.getChats().find(c => c.id === chatId);
           if (!chat) { chat = this.makeChat(); chatId = chat.id; }
           const fileCtx = fileIncluded ? await collectProjectContext() : '';
@@ -120,6 +121,7 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
           const cloudSel = await this.resolveSelectedModel();
           // Local model: use webview selection only if no cloud provider
           const localModel = cloudSel.provider ? '' : (msg.localModel || this._currentModel);
+
           try {
             await streamChat(
               msg.text, chat.history.slice(0, -1), fileCtx,
@@ -132,6 +134,7 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
                 diagnostics,
                 gitDiff,
                 localModel,
+                thinking,
                 provider: cloudSel.provider,
                 remoteModel: cloudSel.remoteModel,
                 apiKey: cloudSel.apiKey,
@@ -1034,8 +1037,19 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;background:ra
 .send-btn.stopping:disabled{opacity:1;cursor:pointer}
 
 /* ── DROPDOWNS ── */
-.dropdown{position:fixed;background:rgba(31,26,17,.92);backdrop-filter:blur(20px) saturate(1.3);-webkit-backdrop-filter:blur(20px) saturate(1.3);border:1px solid var(--border-bright);border-radius:12px;padding:5px;z-index:999;width:min(260px,calc(100vw - 16px));box-shadow:0 12px 40px rgba(0,0,0,.7),0 0 0 1px rgba(196,161,101,.05),inset 0 1px 0 rgba(255,255,255,.04);opacity:0;transform:translateY(8px) scale(.98);transition:opacity .22s var(--ease-out),transform .22s var(--ease-out);pointer-events:none}
-.dropdown.open{opacity:1;transform:translateY(0) scale(1);pointer-events:all}
+.dropdown{position:fixed;left:50%;transform:translateX(-50%) translateY(12px) scale(.97);background:rgba(31,26,17,.96);backdrop-filter:blur(20px) saturate(1.3);-webkit-backdrop-filter:blur(20px) saturate(1.3);border:1px solid var(--border-bright);border-radius:14px;padding:5px;z-index:999;width:min(280px,calc(100vw - 24px));box-shadow:0 24px 60px rgba(0,0,0,.8),0 0 0 1px rgba(196,161,101,.07),inset 0 1px 0 rgba(255,255,255,.05);opacity:0;transition:opacity .2s var(--ease-out),transform .2s var(--ease-out);pointer-events:none}
+.dropdown.open{opacity:1;transform:translateX(-50%) translateY(0) scale(1);pointer-events:all}
+/* thinking toggle in model menu */
+.think-toggle-row{display:flex;align-items:center;gap:10px;padding:9px 12px 9px 11px;border-top:1px solid var(--border);margin-top:3px;cursor:pointer}
+.think-toggle-row:hover{background:rgba(255,255,255,.04);border-radius:0 0 9px 9px}
+.think-toggle-label{flex:1;font-size:11.5px;color:var(--text-secondary);font-family:var(--sans)}
+.think-toggle-label b{color:var(--text);font-weight:500}
+.toggle-switch{position:relative;width:32px;height:18px;flex-shrink:0}
+.toggle-switch input{opacity:0;width:0;height:0;position:absolute}
+.toggle-track{position:absolute;inset:0;background:rgba(255,255,255,.12);border-radius:9px;transition:background .2s}
+.toggle-thumb{position:absolute;top:3px;left:3px;width:12px;height:12px;background:#fff;border-radius:50%;transition:transform .2s,background .2s;box-shadow:0 1px 3px rgba(0,0,0,.4)}
+.toggle-switch input:checked ~ .toggle-track{background:var(--gold)}
+.toggle-switch input:checked ~ .toggle-thumb{transform:translateX(14px)}
 .di{display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:8px;cursor:pointer;color:var(--text);font-size:12px;transition:background .16s var(--ease),transform .1s var(--ease)}
 .di:hover{background:var(--surface3)}
 .di:active{transform:scale(.98)}
@@ -1236,6 +1250,7 @@ let currentMode      = 'ask';
 let currentModelKind = 'local'; // 'local' | 'cloud' — for token counter
 let autoModelEnabled = true;    // auto-select model based on prompt complexity
 let currentLocalModel = '';     // currently selected local model id
+let thinkingEnabled   = true;   // send think:true to Ollama
 // Think block state
 let rawAccum         = '';
 let thinkStatus      = 'idle'; // 'idle' | 'thinking' | 'writing'
@@ -1604,7 +1619,7 @@ function send() {
   const imgs = pendingImgs.slice();
   addUserMsg(text, imgs);
   const chosenModel = autoModelEnabled ? pickModelForPrompt(text) : currentLocalModel;
-  vscode.postMessage({ type: 'chat', text, imageData: imgs[0] ?? null, turbo: turboMode, mode: currentMode, localModel: chosenModel });
+  vscode.postMessage({ type: 'chat', text, imageData: imgs[0] ?? null, turbo: turboMode, mode: currentMode, localModel: chosenModel, thinking: thinkingEnabled });
 
   input.value = '';
   input.style.height = 'auto';
@@ -2259,18 +2274,11 @@ function openDropdown(menu, btn) {
   const isOpen = menu.classList.contains('open');
   closeAll();
   if (!isOpen) {
-    const r = btn.getBoundingClientRect();
-    const menuH = menu.offsetHeight || 200;
-    const spaceAbove = r.top;
-    // Open above if not enough space below
-    if (spaceAbove > menuH + 8) {
-      menu.style.bottom = (window.innerHeight - r.top + 4) + 'px';
-      menu.style.top = 'auto';
-    } else {
-      menu.style.top = (r.bottom + 4) + 'px';
-      menu.style.bottom = 'auto';
-    }
-    menu.style.left = Math.max(4, Math.min(r.left, window.innerWidth - 230)) + 'px';
+    // Always center horizontally and open above the input bar
+    const inputBox = document.getElementById('input-box');
+    const ibTop = inputBox ? inputBox.getBoundingClientRect().top : window.innerHeight - 80;
+    menu.style.bottom = (window.innerHeight - ibTop + 10) + 'px';
+    menu.style.top = 'auto';
     menu.classList.add('open');
   }
 }
@@ -2385,6 +2393,24 @@ function buildModelMenu(models, current) {
     });
     menu.appendChild(item);
   });
+  // Thinking toggle row
+  const thinkRow = document.createElement('div');
+  thinkRow.className = 'think-toggle-row';
+  thinkRow.innerHTML =
+    '<div class="think-toggle-label"><b>Thinking</b> — show reasoning</div>' +
+    '<label class="toggle-switch" title="Enable/disable thinking mode">' +
+      '<input type="checkbox" id="think-checkbox" ' + (thinkingEnabled ? 'checked' : '') + '/>' +
+      '<div class="toggle-track"></div>' +
+      '<div class="toggle-thumb"></div>' +
+    '</label>';
+  thinkRow.addEventListener('click', e => {
+    e.stopPropagation();
+    const cb = thinkRow.querySelector('#think-checkbox');
+    cb.checked = !cb.checked;
+    thinkingEnabled = cb.checked;
+  });
+  menu.appendChild(thinkRow);
+
   // "+ Add AI" footer row
   const addRow = document.createElement('div');
   addRow.className = 'di di-add';

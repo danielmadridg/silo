@@ -24,6 +24,7 @@ export interface StreamChatOptions {
   diagnostics?: string;
   gitDiff?: string;
   localModel?: string;    // local Ollama model override (e.g. 'silo-phi')
+  thinking?: boolean;     // enable Qwen thinking mode (default true)
   onToolEvent?: (event: ToolEvent) => void;
   // Cloud provider routing
   provider?: string;      // '' | 'openai' | 'anthropic' | 'gemini'
@@ -38,7 +39,7 @@ export async function streamChat(
   onToken: (token: string) => void,
   opts: StreamChatOptions = {}
 ): Promise<void> {
-  const { signal, turbo = false, workspace = '', mode = 'auto', diagnostics = '', gitDiff = '', localModel = '', onToolEvent, provider = '', remoteModel = '', apiKey = '' } = opts;
+  const { signal, turbo = false, workspace = '', mode = 'auto', diagnostics = '', gitDiff = '', localModel = '', thinking = true, onToolEvent, provider = '', remoteModel = '', apiKey = '' } = opts;
 
   const response = await fetch(`${getBackendUrl()}/chat`, {
     method: 'POST',
@@ -53,6 +54,7 @@ export async function streamChat(
       diagnostics,
       git_diff: gitDiff,
       local_model: localModel,
+      thinking,
       provider,
       remote_model: remoteModel,
       api_key: apiKey,
