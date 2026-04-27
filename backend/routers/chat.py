@@ -92,6 +92,7 @@ def _agentic_stream(messages: list[dict], turbo: bool, workspace: str, mode: str
                         "stream": False,
                         "options": opts,
                         "tools": tools,
+                        "think": mode == "plan",  # thinking only in plan mode
                     })
                     resp.raise_for_status()
                     data = resp.json()
