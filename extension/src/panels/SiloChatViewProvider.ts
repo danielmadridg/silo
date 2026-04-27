@@ -118,6 +118,8 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
           post({ type: 'start' });
           let full = ''; let stopped = false;
           const cloudSel = await this.resolveSelectedModel();
+          // Local model: use webview selection only if no cloud provider
+          const localModel = cloudSel.provider ? '' : (msg.localModel || this._currentModel);
           try {
             await streamChat(
               msg.text, chat.history.slice(0, -1), fileCtx,
@@ -129,10 +131,11 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
                 mode,
                 diagnostics,
                 gitDiff,
+                localModel,
                 provider: cloudSel.provider,
                 remoteModel: cloudSel.remoteModel,
                 apiKey: cloudSel.apiKey,
-                onToolEvent: ev => post({ type: ev.type, tool: ev.tool, args: ev.args, result: ev.result, success: ev.success, todos: ev.todos })
+                onToolEvent: ev => post({ type: ev.type, tool: ev.tool, args: ev.args, result: ev.result, success: ev.success, todos: ev.todos, ask_user: ev.ask_user })
               }
             );
           } catch (e: any) {
@@ -760,6 +763,8 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;background:ra
 .hdr-btn:hover{color:var(--text);background:var(--surface2)}
 .hdr-btn:active{transform:scale(.94)}
 .hdr-btn svg{width:16px;height:16px}
+#auto-model-btn{padding:5px 6px;border-radius:9px;transition:color .25s var(--ease),background .25s var(--ease),box-shadow .25s var(--ease)}
+#auto-model-btn.auto-model-on{color:var(--gold);background:rgba(196,161,101,.08);box-shadow:0 0 0 1px rgba(196,161,101,.3),0 0 16px rgba(196,161,101,.12)}
 #turbo-btn{padding:5px 6px;border-radius:9px;transition:color .25s var(--ease),background .25s var(--ease),box-shadow .25s var(--ease)}
 #turbo-btn svg{width:13px;height:13px}
 #turbo-btn.turbo-on{color:#f5b041;background:rgba(245,176,65,.08);box-shadow:0 0 0 1px rgba(245,176,65,.3),0 0 16px rgba(245,176,65,.12)}
@@ -1118,6 +1123,10 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;background:ra
         <span id="active-file-name" class="no-file">no file</span>
       </div>
       <div class="actions-right">
+        <button class="icon-btn" id="auto-model-btn" title="Auto-select model (⚡ fast vs ◈ smart)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+          <span class="icon-btn-label" id="auto-model-label">Auto</span>
+        </button>
         <button class="icon-btn" id="turbo-btn" title="Turbo — max GPU/CPU/RAM">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
         </button>
@@ -1225,6 +1234,8 @@ let lastModels       = [];
 let turboMode        = false;
 let currentMode      = 'ask';
 let currentModelKind = 'local'; // 'local' | 'cloud' — for token counter
+let autoModelEnabled = false;   // auto-select model based on prompt complexity
+let currentLocalModel = '';     // currently selected local model id
 // Think block state
 let rawAccum         = '';
 let thinkStatus      = 'idle'; // 'idle' | 'thinking' | 'writing'
@@ -1592,7 +1603,8 @@ function send() {
 
   const imgs = pendingImgs.slice();
   addUserMsg(text, imgs);
-  vscode.postMessage({ type: 'chat', text, imageData: imgs[0] ?? null, turbo: turboMode, mode: currentMode });
+  const chosenModel = autoModelEnabled ? pickModelForPrompt(text) : currentLocalModel;
+  vscode.postMessage({ type: 'chat', text, imageData: imgs[0] ?? null, turbo: turboMode, mode: currentMode, localModel: chosenModel });
 
   input.value = '';
   input.style.height = 'auto';
@@ -2062,7 +2074,10 @@ window.addEventListener('message', e => {
       lastModels = msg.models ?? [];
       buildModelMenu(lastModels, msg.current);
       const curM = lastModels.find(m => m.id === msg.current);
-      if (curM) currentModelKind = curM.kind || 'local';
+      if (curM) {
+        currentModelKind = curM.kind || 'local';
+        if (curM.kind === 'local') currentLocalModel = curM.id;
+      }
       break;
     }
     case 'cloudModelDetail': {
@@ -2104,6 +2119,25 @@ turboBtn.addEventListener('click', () => {
     ? 'Turbo ON - all GPU layers, max threads, 32k context'
     : 'Turbo - max GPU/CPU/RAM';
   vscode.postMessage({ type: 'setTurbo', enabled: turboMode });
+});
+
+// -- Auto model select --
+function pickModelForPrompt(text) {
+  const words = text.trim().split(/\s+/).length;
+  const hasCode = /function |class |import |def |const |let |var |=>/.test(text);
+  const isComplex = words > 20 || hasCode ||
+    /fix|debug|implement|refactor|build|analyze|review|search|create|add|update|rewrite|explain/i.test(text);
+  return isComplex ? 'silo-qwen' : 'silo-phi';
+}
+
+const autoModelBtn = document.getElementById('auto-model-btn');
+const autoModelLabel = document.getElementById('auto-model-label');
+autoModelBtn.addEventListener('click', () => {
+  autoModelEnabled = !autoModelEnabled;
+  autoModelBtn.classList.toggle('auto-model-on', autoModelEnabled);
+  autoModelBtn.title = autoModelEnabled
+    ? 'Auto-model ON: picks Qwen (complex) or Phi (fast) per message'
+    : 'Auto-select model based on prompt complexity';
 });
 
 // -- History --
@@ -2322,6 +2356,7 @@ function buildModelMenu(models, current) {
       modelLabel.textContent = m.tier;
       modelBtnLogo.src = m.logoUri;
       currentModelKind = m.kind || 'local';
+      if (m.kind === 'local') currentLocalModel = m.id;
       menu.querySelectorAll('.model-di').forEach(d => d.classList.remove('active'));
       item.classList.add('active');
       closeAll();

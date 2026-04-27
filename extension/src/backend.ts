@@ -5,13 +5,14 @@ function getBackendUrl(): string {
 }
 
 export interface ToolEvent {
-  type: 'tool_call' | 'tool_result' | 'todos' | 'tokens';
+  type: 'tool_call' | 'tool_result' | 'todos' | 'tokens' | 'ask_user';
   tool?: string;
   args?: Record<string, any>;
   result?: string;
   success?: boolean;
   todos?: { text: string; status: 'pending' | 'in_progress' | 'done' }[];
   tokens?: { input: number; output: number };
+  ask_user?: { question: string; options: string[] };
 }
 
 export interface StreamChatOptions {
@@ -21,6 +22,7 @@ export interface StreamChatOptions {
   mode?: 'ask' | 'plan' | 'auto';
   diagnostics?: string;
   gitDiff?: string;
+  localModel?: string;    // local Ollama model override (e.g. 'silo-phi')
   onToolEvent?: (event: ToolEvent) => void;
   // Cloud provider routing
   provider?: string;      // '' | 'openai' | 'anthropic' | 'gemini'
@@ -35,7 +37,7 @@ export async function streamChat(
   onToken: (token: string) => void,
   opts: StreamChatOptions = {}
 ): Promise<void> {
-  const { signal, turbo = false, workspace = '', mode = 'auto', diagnostics = '', gitDiff = '', onToolEvent, provider = '', remoteModel = '', apiKey = '' } = opts;
+  const { signal, turbo = false, workspace = '', mode = 'auto', diagnostics = '', gitDiff = '', localModel = '', onToolEvent, provider = '', remoteModel = '', apiKey = '' } = opts;
 
   const response = await fetch(`${getBackendUrl()}/chat`, {
     method: 'POST',
@@ -49,6 +51,7 @@ export async function streamChat(
       mode,
       diagnostics,
       git_diff: gitDiff,
+      local_model: localModel,
       provider,
       remote_model: remoteModel,
       api_key: apiKey,
@@ -78,6 +81,8 @@ export async function streamChat(
             onToolEvent({ type: 'tokens', tokens: parsed.tokens });
           } else if (parsed.todos && onToolEvent) {
             onToolEvent({ type: 'todos', todos: parsed.todos });
+          } else if (parsed.ask_user && onToolEvent) {
+            onToolEvent({ type: 'ask_user', ask_user: parsed.ask_user });
           } else if (parsed.tool_call && onToolEvent) {
             onToolEvent({ type: 'tool_call', tool: parsed.tool_call, args: parsed.args });
           } else if (parsed.tool_result && onToolEvent) {

@@ -18,6 +18,9 @@ router = APIRouter()
 ASYNC_TOOLS = {"web_search", "web_fetch"}
 
 
+TOOL_CAPABLE_MODELS: set[str] = {"silo-qwen"}  # models that support Ollama tool calling
+
+
 class ChatRequest(BaseModel):
     message: str
     history: list[dict] = []
@@ -27,20 +30,22 @@ class ChatRequest(BaseModel):
     mode: str = "auto"          # ask | plan | auto (edit)
     diagnostics: str = ""
     git_diff: str = ""
+    local_model: str = ""       # local Ollama model override (e.g. silo-phi)
     # Cloud provider routing — when provider is set, skip Ollama + tools entirely
     provider: str = ""          # "" | openai | anthropic | gemini
     remote_model: str = ""      # model id for the cloud provider (e.g. gpt-4o)
     api_key: str = ""           # user-supplied API key
 
 
-def _stream_ollama(messages: list[dict], turbo: bool, timeout: float = 300.0):
+def _stream_ollama(messages: list[dict], turbo: bool, timeout: float = 300.0, model: str = ""):
     """Simple streaming without tool use (refactor/analysis)."""
     async def generate():
         opts = config.get_options(turbo)
+        use_model = model or config.MODEL_NAME
         try:
             async with httpx.AsyncClient(base_url=config.OLLAMA_BASE_URL, timeout=timeout) as client:
                 async with client.stream("POST", "/api/chat", json={
-                    "model": config.MODEL_NAME,
+                    "model": use_model,
                     "messages": messages,
                     "stream": True,
                     "options": opts,
@@ -206,6 +211,17 @@ async def chat(req: ChatRequest):
     if req.provider:
         return StreamingResponse(
             stream_cloud(req.provider, messages, req.remote_model, req.api_key),
+            media_type="text/event-stream"
+        )
+
+    # Local model: use override if provided, else default
+    local_model = req.local_model or config.MODEL_NAME
+    supports_tools = local_model in TOOL_CAPABLE_MODELS
+
+    if not supports_tools:
+        # Model doesn't support tool calling — use simple stream
+        return StreamingResponse(
+            _stream_ollama(messages, req.turbo, model=local_model),
             media_type="text/event-stream"
         )
 
