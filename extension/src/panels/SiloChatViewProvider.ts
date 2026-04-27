@@ -135,7 +135,7 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
                 provider: cloudSel.provider,
                 remoteModel: cloudSel.remoteModel,
                 apiKey: cloudSel.apiKey,
-                onToolEvent: ev => post({ type: ev.type, tool: ev.tool, args: ev.args, result: ev.result, success: ev.success, todos: ev.todos, ask_user: ev.ask_user })
+                onToolEvent: ev => post({ type: ev.type, tool: ev.tool, args: ev.args, result: ev.result, success: ev.success, todos: ev.todos, ask_user: ev.ask_user, thinking_token: ev.thinking_token })
               }
             );
           } catch (e: any) {
@@ -1826,8 +1826,27 @@ window.addEventListener('message', e => {
       scrollBottom();
       break;
     }
+    case 'thinking_token': {
+      if (!currentWrap) break;
+      if (thinkStatus !== 'thinking') {
+        thinkStatus = 'thinking';
+        if (thinkBlockEl) thinkBlockEl.style.display = '';
+        if (currentStatusEl) currentStatusEl.querySelector('.ai-status-text').textContent = 'Thinking...';
+      }
+      if (thinkBodyEl) thinkBodyEl.textContent += (msg.thinking_token ?? '');
+      if (thinkHeaderCount) {
+        const wc = (thinkBodyEl?.textContent ?? '').trim().split(/\s+/).filter(Boolean).length;
+        thinkHeaderCount.textContent = wc + ' words';
+      }
+      scrollBottom();
+      break;
+    }
     case 'token': {
       if (!currentBubble) break;
+      if (thinkStatus === 'thinking') {
+        thinkStatus = 'writing';
+        if (currentStatusEl) currentStatusEl.querySelector('.ai-status-text').textContent = 'Writing...';
+      }
       rawAccum += (msg.token ?? '');
 
       const tStart = rawAccum.indexOf('<think>');

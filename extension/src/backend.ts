@@ -5,7 +5,7 @@ function getBackendUrl(): string {
 }
 
 export interface ToolEvent {
-  type: 'tool_call' | 'tool_result' | 'todos' | 'tokens' | 'ask_user';
+  type: 'tool_call' | 'tool_result' | 'todos' | 'tokens' | 'ask_user' | 'thinking_token';
   tool?: string;
   args?: Record<string, any>;
   result?: string;
@@ -13,6 +13,7 @@ export interface ToolEvent {
   todos?: { text: string; status: 'pending' | 'in_progress' | 'done' }[];
   tokens?: { input: number; output: number };
   ask_user?: { question: string; options: string[] };
+  thinking_token?: string;
 }
 
 export interface StreamChatOptions {
@@ -83,6 +84,8 @@ export async function streamChat(
             onToolEvent({ type: 'todos', todos: parsed.todos });
           } else if (parsed.ask_user && onToolEvent) {
             onToolEvent({ type: 'ask_user', ask_user: parsed.ask_user });
+          } else if (parsed.thinking_token !== undefined && onToolEvent) {
+            onToolEvent({ type: 'thinking_token', thinking_token: parsed.thinking_token });
           } else if (parsed.tool_call && onToolEvent) {
             onToolEvent({ type: 'tool_call', tool: parsed.tool_call, args: parsed.args });
           } else if (parsed.tool_result && onToolEvent) {

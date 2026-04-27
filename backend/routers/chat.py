@@ -86,33 +86,53 @@ def _agentic_stream(messages: list[dict], turbo: bool, workspace: str, mode: str
         try:
             async with httpx.AsyncClient(base_url=config.OLLAMA_BASE_URL, timeout=timeout) as client:
                 for _round in range(25):
-                    resp = await client.post("/api/chat", json={
+                    # Stream the first token chunk so the user sees thinking in real time
+                    thinking_accum = ""
+                    content = ""
+                    tool_calls = []
+                    msg = {}
+
+                    async with client.stream("POST", "/api/chat", json={
                         "model": config.MODEL_NAME,
                         "messages": current_messages,
-                        "stream": False,
+                        "stream": True,
                         "options": opts,
                         "tools": tools,
-                        "think": mode == "plan",  # thinking only in plan mode
-                    })
-                    resp.raise_for_status()
-                    data = resp.json()
-
-                    if err := data.get("error"):
-                        yield f"data: {json.dumps({'error': err})}\n\n"
-                        return
-
-                    msg = data.get("message", {})
-                    tool_calls = msg.get("tool_calls") or []
-                    content = msg.get("content") or ""
+                        "think": True,
+                    }) as streamed:
+                        streamed.raise_for_status()
+                        async for line in streamed.aiter_lines():
+                            if not line:
+                                continue
+                            try:
+                                chunk = json.loads(line)
+                            except Exception:
+                                continue
+                            if err := chunk.get("error"):
+                                yield f"data: {json.dumps({'error': err})}\n\n"
+                                return
+                            m = chunk.get("message", {})
+                            # Thinking tokens — stream live to UI
+                            t = m.get("thinking") or ""
+                            if t:
+                                thinking_accum += t
+                                yield f"data: {json.dumps({'thinking_token': t})}\n\n"
+                            # Content tokens
+                            c = m.get("content") or ""
+                            if c:
+                                content += c
+                                yield f"data: {json.dumps({'token': c})}\n\n"
+                            if chunk.get("done"):
+                                # Reconstruct full message for history
+                                msg = chunk.get("message", {})
+                                if thinking_accum:
+                                    msg["thinking"] = thinking_accum
+                                msg["content"] = content
+                                tool_calls = msg.get("tool_calls") or []
+                                break
 
                     if not tool_calls:
-                        for i in range(0, len(content), 3):
-                            yield f"data: {json.dumps({'token': content[i:i+3]})}\n\n"
                         return
-
-                    if content:
-                        for i in range(0, len(content), 3):
-                            yield f"data: {json.dumps({'token': content[i:i+3]})}\n\n"
 
                     current_messages.append(msg)
 
