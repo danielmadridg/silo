@@ -1234,7 +1234,7 @@ let lastModels       = [];
 let turboMode        = false;
 let currentMode      = 'ask';
 let currentModelKind = 'local'; // 'local' | 'cloud' — for token counter
-let autoModelEnabled = false;   // auto-select model based on prompt complexity
+let autoModelEnabled = true;    // auto-select model based on prompt complexity
 let currentLocalModel = '';     // currently selected local model id
 // Think block state
 let rawAccum         = '';
@@ -2125,8 +2125,11 @@ turboBtn.addEventListener('click', () => {
 function pickModelForPrompt(text) {
   const words = text.trim().split(/\s+/).length;
   const hasCode = /function |class |import |def |const |let |var |=>/.test(text);
-  const isComplex = words > 20 || hasCode ||
-    /fix|debug|implement|refactor|build|analyze|review|search|create|add|update|rewrite|explain/i.test(text);
+  // Needs web search or tools
+  const needsWeb = /busca|encuentra|search|look up|find out|when will|cuando|qu[eé] es|what is|latest|nuevo|nuevo|release|noticias|news/i.test(text);
+  // Complex coding/analysis task
+  const isTask = /fix|debug|implement|refactor|build|analiz|review|create|add|update|rewrite|explain|arregla|crea|a[nñ]ade|implementa|refactoriza|cambia|mejora/i.test(text);
+  const isComplex = words > 15 || hasCode || needsWeb || isTask;
   return isComplex ? 'silo-qwen' : 'silo-phi';
 }
 
@@ -2507,6 +2510,9 @@ window.addEventListener('unhandledrejection', e => {
 });
 
 // -- Init --
+// Reflect default auto-model state
+autoModelBtn.classList.toggle('auto-model-on', autoModelEnabled);
+
 vscode.postMessage({ type: 'init' });
 </script>
 </body>
