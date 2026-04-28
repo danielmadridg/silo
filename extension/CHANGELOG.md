@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.4.0 — 2026-04-28
+
+### Added
+- **Slash command autocomplete** — type `/` in the input to see a command list with arrow-key navigation and Enter to confirm. Matches Claude Code UX.
+- **Live thinking stream** — Qwen reasoning tokens appear in real time in the collapsible Reasoning block. No more blank "Working…" screen during complex queries.
+- **Thinking toggle** — switch in the model picker to enable/disable `think:true` per request.
+- **Auto model** — toggle that picks Qwen (complex/code) or Phi (short/fast) automatically per message. Active by default.
+- **Plan mode** — full Claude Code–style planning: think → explore → clarify (`ask_user` with option buttons) → numbered plan → todo checklist → "Switch to Auto" button.
+
+### Changed
+- **Active file** — sidebar now retains the last open file when focus moves to the chat panel (no more "no file" flash).
+- **Dropdowns** — all dropdowns open centered above the input bar. No more cut-off on narrow sidebars.
+- **Search / Review** — dropdown buttons now insert `/search` or `/review` into the input (editable before sending).
+- **"Add context"** — renamed from "Add file context". Correctly shows active file.
+- Local model selection now correctly reaches the backend on every message.
+
+### Fixed
+- Phi-4 400 error — `silo-phi` routes to simple stream (no tool-calling), works correctly.
+- TypeScript `as any` / `as HTMLElement` casts inside webview template literal caused SyntaxError that broke all buttons and input. Fixed.
+- Fallback model after removing a cloud model was `qwen3:14b` (deleted). Now correctly `silo-qwen`.
+- Qwen3.6 thinking mode caused 3+ minute freezes in Auto mode. Now streams thinking tokens live.
+
+---
+
 ## 1.3.0 — 2026-04-26
 
 ### Changed

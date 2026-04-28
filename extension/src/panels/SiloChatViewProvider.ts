@@ -39,6 +39,7 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
   private _sidebarStreaming = false;
   private _sidebarAbort: AbortController | null = null;
   private _sidebarFileIncluded = true;
+  private _lastTextEditor: vscode.TextEditor | undefined = vscode.window.activeTextEditor;
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
@@ -69,8 +70,9 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
 
     const post = (msg: any) => panel.webview.postMessage(msg);
 
+    let lastTextEditor = vscode.window.activeTextEditor;
     const pushFile = () => {
-      const editor = vscode.window.activeTextEditor;
+      const editor = vscode.window.activeTextEditor || lastTextEditor;
       const filename = editor ? vscode.workspace.asRelativePath(editor.document.fileName) : null;
       post({ type: 'fileState', filename, included: fileIncluded });
     };
@@ -246,7 +248,7 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
       }
     });
 
-    vscode.window.onDidChangeActiveTextEditor(pushFile);
+    vscode.window.onDidChangeActiveTextEditor(e => { if (e) lastTextEditor = e; pushFile(); });
     panel.onDidDispose(() => {});
   }
 
@@ -396,7 +398,7 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
     };
     webviewView.webview.html = this.getHtml(webviewView.webview);
     webviewView.webview.onDidReceiveMessage(msg => this._handleMessage(msg));
-    vscode.window.onDidChangeActiveTextEditor(() => this.pushFileState());
+    vscode.window.onDidChangeActiveTextEditor(e => { if (e) this._lastTextEditor = e; this.pushFileState(); });
   }
 
   private onInit() {
@@ -452,7 +454,7 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private pushFileState() {
-    const editor = vscode.window.activeTextEditor;
+    const editor = vscode.window.activeTextEditor || this._lastTextEditor;
     const filename = editor ? vscode.workspace.asRelativePath(editor.document.fileName) : null;
     this.post({ type: 'fileState', filename, included: this._sidebarFileIncluded });
   }
@@ -487,7 +489,7 @@ export class SiloChatViewProvider implements vscode.WebviewViewProvider {
     const m = list.find(x => x.id === id);
     if (m) { try { await this._context.secrets.delete(m.keyRef); } catch {} }
     this.saveCloudModels(list.filter(x => x.id !== id));
-    if (this._currentModel === id) this._currentModel = 'qwen3:14b';
+    if (this._currentModel === id) this._currentModel = 'silo-qwen';
   }
   private async updateCloudModel(id: string, patch: { provider?: 'openai' | 'anthropic' | 'gemini'; remoteModel?: string; label?: string; apiKey?: string }) {
     const list = this.getCloudModels();
@@ -913,6 +915,13 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;background:ra
 .files-modified{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10.5px;color:var(--muted);background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:4px 10px;margin-top:6px;letter-spacing:.02em}
 .files-modified-count{color:var(--gold);font-weight:600}
 .files-modified::before{content:'';width:5px;height:5px;border-radius:50%;background:var(--gold);box-shadow:0 0 6px var(--gold-glow)}
+/* Slash command autocomplete */
+#slash-menu{position:fixed;left:50%;transform:translateX(-50%);background:rgba(31,26,17,.97);backdrop-filter:blur(20px);border:1px solid var(--border-bright);border-radius:12px;padding:4px;z-index:1000;width:min(280px,calc(100vw - 24px));box-shadow:0 16px 48px rgba(0,0,0,.8);display:none}
+#slash-menu.open{display:block}
+.slash-item{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:8px;cursor:pointer;transition:background .12s}
+.slash-item:hover,.slash-item.selected{background:rgba(196,161,101,.12)}
+.slash-cmd{font-family:var(--mono);font-size:11.5px;color:var(--gold);font-weight:600;min-width:70px}
+.slash-desc{font-size:11px;color:var(--muted)}
 /* Plan mode: ask_user card */
 .ask-user-card{margin-top:12px;padding:14px 16px;background:rgba(196,161,101,.07);border:1px solid rgba(196,161,101,.28);border-radius:10px}
 .ask-user-card.ask-resolved{opacity:.45;pointer-events:none}
@@ -1137,9 +1146,8 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;background:ra
         <span id="active-file-name" class="no-file">no file</span>
       </div>
       <div class="actions-right">
-        <button class="icon-btn" id="auto-model-btn" title="Auto-select model (⚡ fast vs ◈ smart)">
+        <button class="icon-btn" id="auto-model-btn" title="Auto-select model based on prompt complexity">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
-          <span class="icon-btn-label" id="auto-model-label">Auto</span>
         </button>
         <button class="icon-btn" id="turbo-btn" title="Turbo — max GPU/CPU/RAM">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
@@ -1162,6 +1170,9 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;background:ra
 
 </div>
 
+<!-- Slash command autocomplete -->
+<div id="slash-menu"></div>
+
 <!-- + dropdown -->
 <div class="dropdown" id="plus-menu">
   <div class="di" id="add-img-btn">
@@ -1170,16 +1181,16 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;background:ra
   </div>
   <div class="di" id="add-file-btn">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-    <div class="di-body"><span class="di-title">Add file context</span><span class="di-desc">Include current file in prompt</span></div>
+    <div class="di-body"><span class="di-title">Add context</span><span class="di-desc">Include active file in prompt</span></div>
   </div>
   <div class="sep"></div>
   <div class="di" id="search-web-btn">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    <div class="di-body"><span class="di-title">Search online</span><span class="di-desc">Open query in browser</span></div>
+    <div class="di-body"><span class="di-title">Search online</span><span class="di-desc">/search &lt;query&gt;</span></div>
   </div>
   <div class="di" id="review-btn">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-    <div class="di-body"><span class="di-title">Review changes</span><span class="di-desc">AI review of current git diff</span></div>
+    <div class="di-body"><span class="di-title">Review changes</span><span class="di-desc">/review</span></div>
   </div>
   <div class="di" id="export-btn">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -1406,10 +1417,17 @@ input.addEventListener('input', () => {
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 110) + 'px';
   if (!isStreaming) sendBtn.disabled = !input.value.trim() && !pendingImgs.length;
+  updateSlashMenu();
 });
 
 // Enter to send, Shift+Enter for newline
 input.addEventListener('keydown', e => {
+  if (slashMenuOpen()) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); slashMoveSelection(1); return; }
+    if (e.key === 'ArrowUp')   { e.preventDefault(); slashMoveSelection(-1); return; }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); slashConfirm(); return; }
+    if (e.key === 'Escape') { hideSlashMenu(); return; }
+  }
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     if (!isStreaming && (input.value.trim() || pendingImgs.length)) send();
@@ -2177,6 +2195,72 @@ autoModelBtn.addEventListener('click', () => {
     : 'Auto-select model based on prompt complexity';
 });
 
+// -- Slash command autocomplete --
+const SLASH_COMMANDS = [
+  { cmd: '/clear',   desc: 'Start a new chat' },
+  { cmd: '/compact', desc: 'Summarize conversation to save context' },
+  { cmd: '/review',  desc: 'AI review of current git diff' },
+  { cmd: '/search',  desc: 'Search the web' },
+  { cmd: '/export',  desc: 'Save chat as Markdown' },
+  { cmd: '/mode',    desc: 'Switch mode: ask / plan / auto' },
+  { cmd: '/model',   desc: 'Switch AI model' },
+  { cmd: '/help',    desc: 'Show available commands' },
+];
+const slashMenu = document.getElementById('slash-menu');
+let slashSelected = 0;
+let slashFiltered = [];
+
+function slashMenuOpen() { return slashMenu.classList.contains('open'); }
+
+function updateSlashMenu() {
+  const val = input.value;
+  if (!val.startsWith('/') || val.includes(' ')) { hideSlashMenu(); return; }
+  const q = val.toLowerCase();
+  slashFiltered = SLASH_COMMANDS.filter(c => c.cmd.startsWith(q));
+  if (!slashFiltered.length) { hideSlashMenu(); return; }
+  slashSelected = 0;
+  renderSlashMenu();
+  // Position above input bar
+  const ibTop = document.getElementById('input-box').getBoundingClientRect().top;
+  slashMenu.style.bottom = (window.innerHeight - ibTop + 10) + 'px';
+  slashMenu.classList.add('open');
+}
+
+function renderSlashMenu() {
+  slashMenu.innerHTML = slashFiltered.map((c, i) =>
+    '<div class="slash-item' + (i === slashSelected ? ' selected' : '') + '" data-i="' + i + '">' +
+      '<span class="slash-cmd">' + c.cmd + '</span>' +
+      '<span class="slash-desc">' + c.desc + '</span>' +
+    '</div>'
+  ).join('');
+  slashMenu.querySelectorAll('.slash-item').forEach(el => {
+    el.addEventListener('mousedown', e => {
+      e.preventDefault();
+      slashSelected = parseInt(el.dataset.i);
+      slashConfirm();
+    });
+  });
+}
+
+function slashMoveSelection(dir) {
+  slashSelected = (slashSelected + dir + slashFiltered.length) % slashFiltered.length;
+  renderSlashMenu();
+}
+
+function slashConfirm() {
+  if (!slashFiltered[slashSelected]) return;
+  const cmd = slashFiltered[slashSelected].cmd;
+  // Commands that take args: keep cursor after command + space
+  const needsArg = cmd === '/search' || cmd === '/mode' || cmd === '/model';
+  input.value = cmd + (needsArg ? ' ' : '');
+  hideSlashMenu();
+  input.focus();
+  input.dispatchEvent(new Event('input'));
+  if (!needsArg) send();
+}
+
+function hideSlashMenu() { slashMenu.classList.remove('open'); }
+
 // -- History --
 function toggleHistory() {
   histOpen = !histOpen;
@@ -2297,14 +2381,15 @@ document.getElementById('add-file-btn').addEventListener('click', () => {
 });
 document.getElementById('search-web-btn').addEventListener('click', () => {
   closeAll();
-  const query = input.value.trim();
-  vscode.postMessage({ type: 'searchWeb', query });
+  input.value = '/search ';
+  input.focus();
+  input.dispatchEvent(new Event('input'));
 });
 document.getElementById('review-btn').addEventListener('click', () => {
   closeAll();
-  showChat();
-  vscode.postMessage({ type: 'reviewChat', baseRef: 'HEAD~1' });
-  addSystemNote('Reviewing diff against HEAD~1\u2026');
+  input.value = '/review';
+  input.focus();
+  input.dispatchEvent(new Event('input'));
 });
 document.getElementById('export-btn').addEventListener('click', () => {
   closeAll();
@@ -2397,7 +2482,7 @@ function buildModelMenu(models, current) {
   const thinkRow = document.createElement('div');
   thinkRow.className = 'think-toggle-row';
   thinkRow.innerHTML =
-    '<div class="think-toggle-label"><b>Thinking</b> — show reasoning</div>' +
+    '<div class="think-toggle-label"><b>Thinking</b></div>' +
     '<label class="toggle-switch" title="Enable/disable thinking mode">' +
       '<input type="checkbox" id="think-checkbox" ' + (thinkingEnabled ? 'checked' : '') + '/>' +
       '<div class="toggle-track"></div>' +
