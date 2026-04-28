@@ -2282,7 +2282,6 @@ function pickModelForPrompt(text) {
 }
 
 const autoModelBtn = document.getElementById('auto-model-btn');
-const autoModelLabel = document.getElementById('auto-model-label');
 autoModelBtn.addEventListener('click', () => {
   autoModelEnabled = !autoModelEnabled;
   autoModelBtn.classList.toggle('auto-model-on', autoModelEnabled);
@@ -2534,7 +2533,7 @@ function buildModelMenu(models, current) {
         '</div>'
       : '';
     item.innerHTML =
-      '<img class="co-logo" src="' + esc(m.logoUri) + '" alt="' + esc(m.company) + '" onerror="this.style.display=\\'none\\'"/>' +
+      '<img class="co-logo" src="' + esc(m.logoUri) + '" alt="' + esc(m.company) + '" onerror="this.hidden=true"/>' +
       '<div class="di-body">' +
         '<span class="di-title">' + esc(m.label) + '</span>' +
         '<span class="di-desc">' + esc(m.company) + '</span>' +
