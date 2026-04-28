@@ -1236,6 +1236,9 @@ h2.md-h{font-size:15px}h3.md-h{font-size:13.5px}h4.md-h{font-size:12.5px}
 
 <script>
 const vscode = acquireVsCodeApi();
+window.onerror = (msg, src, line) => {
+  document.body.innerHTML = '<div style="color:#e74c3c;padding:20px;font-family:monospace;font-size:12px;white-space:pre-wrap">JS Error: ' + msg + '\nLine: ' + line + '</div>';
+};
 
 // -- Elements --
 const input        = document.getElementById('input');
