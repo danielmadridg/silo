@@ -1237,7 +1237,14 @@ h2.md-h{font-size:15px}h3.md-h{font-size:13.5px}h4.md-h{font-size:12.5px}
 <script>
 const vscode = acquireVsCodeApi();
 window.onerror = (msg, src, line) => {
-  document.body.innerHTML = '<div style="color:#e74c3c;padding:20px;font-family:monospace;font-size:12px;white-space:pre-wrap">JS Error: ' + msg + '\nLine: ' + line + '</div>';
+  console.error('SILO INIT ERROR:', msg, 'line:', line);
+  try {
+    const d = document.createElement('div');
+    d.style.cssText = 'color:#e74c3c;padding:20px;font-family:monospace;font-size:12px;white-space:pre-wrap;position:fixed;top:0;left:0;right:0;z-index:9999;background:#1a0a0a';
+    d.textContent = 'JS Error: ' + msg + ' (line ' + line + ')';
+    document.body.appendChild(d);
+  } catch(e2) {}
+  return false;
 };
 
 // -- Elements --
@@ -2222,12 +2229,17 @@ window.addEventListener('message', e => {
       break;
     }
     case 'models': {
-      lastModels = msg.models ?? [];
-      buildModelMenu(lastModels, msg.current);
-      const curM = lastModels.find(m => m.id === msg.current);
-      if (curM) {
-        currentModelKind = curM.kind || 'local';
-        if (curM.kind === 'local') currentLocalModel = curM.id;
+      try {
+        lastModels = msg.models ?? [];
+        buildModelMenu(lastModels, msg.current);
+        const curM = lastModels.find(m => m.id === msg.current);
+        if (curM) {
+          currentModelKind = curM.kind || 'local';
+          if (curM.kind === 'local') currentLocalModel = curM.id;
+        }
+      } catch(e) {
+        console.error('models handler error:', e);
+        showError('models error: ' + e.message);
       }
       break;
     }
