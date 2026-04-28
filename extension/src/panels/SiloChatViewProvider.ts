@@ -1756,15 +1756,15 @@ const CODE_SPLIT = new RegExp('(' + FENCE + '[\\s\\S]*?' + FENCE + ')', 'g');
 const CODE_MATCH = new RegExp('^' + FENCE + '(\\w*)\\n?([\\s\\S]*?)' + FENCE + '$');
 // Inline markdown: bold, italic, inline code, links
 const _BT = String.fromCharCode(96);
-const _inlineCodeRe = new RegExp(_BT + '([^' + _BT + '\\n]+?)' + _BT, 'g');
+const _inlineCodeRe = new RegExp(_BT + '([^' + _BT + ']+?)' + _BT, 'g');
 function parseInline(text) {
   return text
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/\*\*\*(.+?)\*\*\*/g,'<strong><em>$1</em></strong>')
     .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
     .replace(/__(.+?)__/g,'<strong>$1</strong>')
-    .replace(/\*([^*\n]+?)\*/g,'<em>$1</em>')
-    .replace(/_([^_\n]+?)_/g,'<em>$1</em>')
+    .replace(/\*([^*]+?)\*/g,'<em>$1</em>')
+    .replace(/_([^_]+?)_/g,'<em>$1</em>')
     .replace(_inlineCodeRe,'<code class="md-code">$1</code>')
     .replace(/\[([^\]]+?)\]\(([^)]+?)\)/g,'<a href="$2" class="md-link" target="_blank">$1</a>');
 }
