@@ -1,88 +1,124 @@
 # Changelog
 
-## 1.4.0 — 2026-04-28
+## 1.5.0 — 2026-04-29
 
 ### Added
-- **Slash command autocomplete** — type `/` in the input to see a command list with arrow-key navigation and Enter to confirm. Matches Claude Code UX.
-- **Live thinking stream** — Qwen reasoning tokens appear in real time in the collapsible Reasoning block. No more blank "Working…" screen during complex queries.
-- **Thinking toggle** — switch in the model picker to enable/disable `think:true` per request.
-- **Auto model** — toggle that picks Qwen (complex/code) or Phi (short/fast) automatically per message. Active by default.
-- **Plan mode** — full Claude Code–style planning: think → explore → clarify (`ask_user` with option buttons) → numbered plan → todo checklist → "Switch to Auto" button.
+- **Phi context awareness** — Phi-4 now gets a tailored "no tools" system prompt that explains it has full context (active file, diagnostics, git diff, retrieved snippets) but cannot call functions. No more "I don't have access to your PC" responses.
+- **Live thinking stream** — Qwen 3.6 reasoning tokens appear in real time in a collapsible Reasoning panel.
+- **Thinking toggle** — switch in the model picker turns Qwen's `<think>` mode on/off per request.
+- **Auto-model selector** — toolbar button auto-picks Qwen (complex/code) or Phi (fast/conversational) based on the prompt. Supports Spanish keywords.
+- **Slash command autocomplete** — type `/` for a floating command list with arrow-key navigation.
+- **Plan mode** — Claude Code–style 6-step flow: think → explore → `ask_user` (clickable options) → numbered plan → todo checklist → "Switch to Auto" handoff button.
+- **Markdown rendering** — bold, italic, inline `code`, headings, lists, blockquotes, links, fenced code blocks with Copy button.
+- **Centered dropdowns** — all toolbar dropdowns open centered above the input bar — no more cut-off in narrow sidebars.
 
 ### Changed
-- **Active file** — sidebar now retains the last open file when focus moves to the chat panel (no more "no file" flash).
-- **Dropdowns** — all dropdowns open centered above the input bar. No more cut-off on narrow sidebars.
-- **Search / Review** — dropdown buttons now insert `/search` or `/review` into the input (editable before sending).
-- **"Add context"** — renamed from "Add file context". Correctly shows active file.
-- Local model selection now correctly reaches the backend on every message.
+- **Local model selection** — the active model selected in the UI now reaches the backend on every chat request (previously the agentic loop hardcoded `silo-qwen`).
+- **System prompts** — modes Ask, Plan, and Auto each get a distinct prompt; Plan and Auto remain agentic, Ask uses an approval-preview flow.
 
 ### Fixed
-- Phi-4 400 error — `silo-phi` routes to simple stream (no tool-calling), works correctly.
-- TypeScript `as any` / `as HTMLElement` casts inside webview template literal caused SyntaxError that broke all buttons and input. Fixed.
-- Fallback model after removing a cloud model was `qwen3:14b` (deleted). Now correctly `silo-qwen`.
-- Qwen3.6 thinking mode caused 3+ minute freezes in Auto mode. Now streams thinking tokens live.
+- Phi-4 400 error — `silo-phi` (no tool calling) now correctly routes to a simple stream without sending tool schemas.
+- Webview SyntaxError — `\n` inside a regex literal embedded in a template literal was producing a literal newline (invalid in Chromium V8). Replaced with `\\n` and removed unneeded `\n` from character classes.
+- TypeScript casts (`as any`, `as HTMLElement`) inside the webview template literal caused runtime SyntaxErrors. Removed all of them.
+- Active file pill now retains the last open file when focus moves to the chat panel — no more flicker to "no file".
+- Fallback model after removing a cloud model is now `silo-qwen` (was a non-existent `qwen3:14b`).
 
 ---
 
-## 1.3.0 — 2026-04-26
+## 1.3.0 - 2026-04-28
 
-### Changed
-- **Local models** — Upgraded default from Qwen3 14B to **Qwen3.6 27B** (`silo-qwen`). Significantly better reasoning and coding benchmarks.
-- **Added Phi-4 14B** — Microsoft Phi-4 14B (`silo-phi`) as a second local option. ~40 tok/s, 84.8% benchmark score. Great balance of speed and quality.
-- **Model picker** — Streamlined to two curated local models. Removed legacy qwen2.5 and llama3.1 entries.
-
----
-
-## 1.2.0 — 2026-04-21
+This is the next Marketplace release after `1.2.0`.
 
 ### Added
-- **BM25 RAG** — Automatically retrieves relevant code snippets from your workspace and injects them into context before each message. Cache invalidates after file writes.
-- **Custom Ollama model** — Backend now runs `silo-qwen` (Qwen3 14B with tuned sampling: temperature 0.25, top_k 40, repeat_penalty 1.12, 32k context).
-- **PR Review** — `/review` slash command and dropdown button streams an AI review of your current git diff.
-- **Chat Export** — `/export` saves the current conversation as a Markdown file.
-- **Web Search** — `/search` and agent `web_search` tool (Auto mode only).
-- **Git tools** — Agent can run `git_status`, `git_log`, `git_diff`, `git_commit`, `git_create_branch`, `git_checkout`, `git_push` autonomously.
-- **Token counter** — Cloud model responses show input/output token usage.
-- **Files-modified badge** — After multi-file edits, shows how many files were touched.
-- **Message rail dots** — Left-side timeline with per-message indicators (Claude Code style).
-- **3-dot wave loader** — Replaces the old orbital spinner.
+- **Ask-mode edit approvals**: Ask can prepare edits, but the UI shows a unified diff with **Apply** and **Reject** before any file is changed.
+- **Checkpoints**: Silo writes patch checkpoints under `.silo/checkpoints/` before Auto/Edit changes and before approved Ask edits.
+- **Explicit context mentions**: use `@file`, `@folder`, `@codebase`, and `@docs` to steer what Silo reads.
+- **Context meter**: the input shows an estimated token budget while typing.
+- **MCP bridge**: configured tools in `.silo/mcp.json` can be called through `mcp_call_tool`.
+- **Automatic project checks**: after Auto/Edit file changes, Silo detects common compile/lint/test commands and streams their results back into the agent loop.
+- **Persistent project instructions**: Silo now reads `SILO.md`, `CLAUDE.md`, `.silo/SILO.md`, `.silo/CLAUDE.md`, and `.silo/instructions.md`.
+- **Slash command autocomplete**: type `/` to browse commands with keyboard navigation.
+- **Live thinking stream**: Qwen reasoning tokens appear in a collapsible Reasoning block.
+- **Thinking toggle**: enable or disable local thinking mode from the model picker.
+- **Auto model selection**: Silo can choose Qwen for complex prompts and Phi for shorter prompts.
+- **Plan mode**: read-only planning with exploration, clarification, todos, and handoff to Auto mode.
+- **Phi-4 local model**: added `silo-phi` as a fast local option beside `silo-qwen`.
+- **Expanded Add AI providers**: compact presets for OpenAI, Anthropic, Gemini, DeepSeek, xAI, Groq, Mistral, OpenRouter, Together AI, Fireworks, Perplexity, Cerebras, NVIDIA, Moonshot, Qwen, and custom OpenAI-compatible endpoints.
 
 ### Changed
-- **Ask mode** — No longer has access to `web_search` / `web_fetch`. Only local filesystem reads. Prevents spurious web searches on simple messages.
-- **System prompt** — Added few-shot examples and clearer tool-use rules. Model now correctly ignores tools for greetings and casual messages.
-- **UI** — Editorial typography (Instrument Serif + Geist + JetBrains Mono), gold glow effects, floating input box, backdrop-blur dropdowns, animated empty state.
+- Version normalized to `1.3.0` because `1.2.0` is the latest published Marketplace version.
+- Auto/Edit keeps full tool access and applies changes directly.
+- Ask mode now uses approval previews instead of applying edits directly.
+- Default local model is `silo-qwen`, with `silo-phi` used for faster local responses when selected.
+- Dropdowns open centered above the input bar.
+- Active-file context now stays stable when focus moves to the chat panel.
+- Markdown now renders while streaming, including bold, italic, inline code, code blocks, lists, and headings.
+- The status indicator uses a gold shimmer and says `Siloing...`.
+- The sidebar now restores the previously open chat after webview reloads or reopening VS Code.
+- Add AI now uses compact searchable dropdowns for provider and model selection.
+- Open Silo chat panels are restored by VS Code after Reload Window or reopening the editor.
+- Prompt language matching now follows the latest user message, preventing Phi from sticking to Spanish after an English prompt.
+- Assistant file references like `src/app.ts:42` are clickable and open directly in VS Code.
+- Streaming no longer forces the chat to the bottom while the user scrolls upward.
+- Thinking mode is now enabled only for models that support a reasoning stream, including `silo-qwen` and user-added DeepSeek reasoning models.
+- Fixed clickable file detection for simple references such as `README.md`.
 
 ### Fixed
-- Model no longer calls `web_search` when greeted with "hola" or other conversational messages.
-- `SILO.md` project memory updated to reflect Qwen3 (was showing Qwen2.5 from old planning doc).
+- Fixed Markdown formatting being lost at the end of streamed messages.
+- Fixed code block parsing in the webview template.
+- Fixed local model selection not always reaching the backend.
+- Fixed `silo-phi` routing by disabling tool-calling for models that do not support it.
+- Fixed fallback model after removing a cloud model.
+- Fixed webview JavaScript syntax issues caused by unsafe casts and escaping inside template literals.
 
 ---
 
-## 1.1.0 — 2026-04-20
-
-Major release. Silo now works as a full agentic coding assistant, both local and cloud.
+## 1.2.0 - 2026-04-21
 
 ### Added
-- **Modes** — Ask, Plan, Auto. Plan restricts the agent to read-only tools; Auto enables full read/write/execute.
-- **Cloud providers** — Use OpenAI, Anthropic (Claude), or Google Gemini alongside the local Ollama model. API keys are stored in VS Code SecretStorage (never on disk).
-- **Add / Edit / Remove AI** — Manage cloud models directly from the model picker. Destructive actions ask for confirmation.
-- **Slash commands** — `/clear`, `/compact`, `/new`, `/mode ask|plan|auto`.
-- **Todo panel** — Agent tracks multi-step work with a live todo list.
-- **Persistent memory** — Agent reads `SILO.md` / `CLAUDE.md` from your workspace.
-- **Auto-compaction** — Long conversations get summarized to save context.
-- **Diagnostics + git diff** — Current problems and unstaged changes are sent with every message.
-- **Multi-chat history** — Sidebar lists prior conversations. Empty chats (no messages) are not saved.
-- **Stop / regenerate** — Abort a streaming response mid-flight.
-- **Image paste** — Paste screenshots into the chat for multimodal models.
+- **BM25 RAG**: automatically retrieves relevant workspace snippets and injects them into context.
+- **Custom Ollama model**: backend runs `silo-qwen` with tuned sampling.
+- **PR review**: `/review` streams an AI review of the current git diff.
+- **Chat export**: `/export` saves the current conversation as Markdown.
+- **Web search**: `/search` and Auto-mode web tools.
+- **Git tools**: status, log, diff, commit, branch, checkout, and push.
+- **Token counter** for cloud model responses.
+- **Files-modified badge** after multi-file edits.
+- **Message rail dots** with per-message indicators.
 
 ### Changed
-- Full UI redesign — cleaner model picker, hover icons, active indicator.
-- Ollama tool-calling loop replaces the old single-shot chat.
+- Ask mode no longer has web tools.
+- System prompt has clearer tool-use rules and few-shot examples.
+- UI uses editorial typography, gold accents, floating input, and animated empty state.
+
+### Fixed
+- Reduced unnecessary web searches on greetings and casual messages.
+- Updated project memory to reflect the current local model.
+
+---
+
+## 1.1.0 - 2026-04-20
+
+### Added
+- Modes: Ask, Plan, Auto.
+- Cloud providers: OpenAI, Anthropic, and Gemini.
+- Add, edit, and remove cloud models from the model picker.
+- Slash commands: `/clear`, `/compact`, `/new`, and `/mode`.
+- Todo panel for multi-step work.
+- Persistent memory from `SILO.md` / `CLAUDE.md`.
+- Auto-compaction for long conversations.
+- Diagnostics and git diff context.
+- Multi-chat history.
+- Stop generation.
+- Image paste.
+
+### Changed
+- Full UI redesign.
+- Ollama tool-calling loop replaced the older single-shot chat flow.
 
 ### Security
-- API keys stored in VS Code SecretStorage.
-- No secrets are logged or sent anywhere except the configured provider endpoint.
-- Backend binds to `127.0.0.1` only.
+- API keys are stored in VS Code SecretStorage.
+- Backend binds to `127.0.0.1`.
 
 ---
 

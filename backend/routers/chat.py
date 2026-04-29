@@ -11,14 +11,24 @@ from memory import load_memory
 from summarize import summarize_history, should_compact
 from providers import stream_cloud
 from rag import retrieve, invalidate as rag_invalidate
+from agent_features import (
+    apply_preview,
+    build_preview,
+    collect_mention_context_sync,
+    create_checkpoint,
+    detect_check_commands,
+    estimate_tokens,
+)
 
 router = APIRouter()
 
 
 ASYNC_TOOLS = {"web_search", "web_fetch"}
+PREVIEW_TOOLS = {"write_file", "edit_file", "multi_edit"}
 
 
 TOOL_CAPABLE_MODELS: set[str] = {"silo-qwen"}  # models that support Ollama tool calling
+THINKING_CAPABLE_MODELS: set[str] = {"silo-qwen"}
 
 
 class ChatRequest(BaseModel):
@@ -36,6 +46,18 @@ class ChatRequest(BaseModel):
     provider: str = ""          # "" | openai | anthropic | gemini
     remote_model: str = ""      # model id for the cloud provider (e.g. gpt-4o)
     api_key: str = ""           # user-supplied API key
+    base_url: str = ""          # optional OpenAI-compatible base URL
+
+
+class ApplyPreviewRequest(BaseModel):
+    workspace: str = ""
+    preview: dict = {}
+
+
+class EstimateRequest(BaseModel):
+    message: str = ""
+    file_context: str = ""
+    workspace: str = ""
 
 
 def _stream_ollama(messages: list[dict], turbo: bool, timeout: float = 300.0, model: str = ""):
@@ -73,7 +95,7 @@ def _stream_ollama(messages: list[dict], turbo: bool, timeout: float = 300.0, mo
     return generate()
 
 
-def _agentic_stream(messages: list[dict], turbo: bool, workspace: str, mode: str, thinking: bool = True, timeout: float = 300.0):
+def _agentic_stream(messages: list[dict], turbo: bool, workspace: str, mode: str, thinking: bool = True, timeout: float = 300.0, model: str = ""):
     """
     Agentic loop with tool use.
     Streams tool_call / tool_result / todos / token events.
@@ -81,11 +103,13 @@ def _agentic_stream(messages: list[dict], turbo: bool, workspace: str, mode: str
     """
     async def generate():
         opts = config.get_options(turbo)
+        use_model = model or config.MODEL_NAME
         current_messages = list(messages)
         tools = filter_tools_for_mode(mode)
 
         try:
             async with httpx.AsyncClient(base_url=config.OLLAMA_BASE_URL, timeout=timeout) as client:
+                checkpoint_created = False
                 for _round in range(25):
                     # Stream the first token chunk so the user sees thinking in real time
                     thinking_accum = ""
@@ -94,7 +118,7 @@ def _agentic_stream(messages: list[dict], turbo: bool, workspace: str, mode: str
                     msg = {}
 
                     async with client.stream("POST", "/api/chat", json={
-                        "model": config.MODEL_NAME,
+                        "model": use_model,
                         "messages": current_messages,
                         "stream": True,
                         "options": opts,
@@ -136,6 +160,7 @@ def _agentic_stream(messages: list[dict], turbo: bool, workspace: str, mode: str
                         return
 
                     current_messages.append(msg)
+                    round_had_edit = False
 
                     for tc in tool_calls:
                         fn = tc.get("function", {})
@@ -148,6 +173,20 @@ def _agentic_stream(messages: list[dict], turbo: bool, workspace: str, mode: str
                                 fn_args = {}
 
                         yield f"data: {json.dumps({'tool_call': fn_name, 'args': fn_args})}\n\n"
+
+                        if mode == "ask" and fn_name in PREVIEW_TOOLS:
+                            preview = build_preview(fn_name, fn_args, workspace)
+                            yield f"data: {json.dumps({'approval_required': preview})}\n\n"
+                            current_messages.append({
+                                "role": "tool",
+                                "content": "(edit preview sent to user for approval)"
+                            })
+                            return
+
+                        if mode != "ask" and fn_name in PREVIEW_TOOLS and not checkpoint_created:
+                            checkpoint = create_checkpoint(workspace, "before-ai-edit")
+                            yield f"data: {json.dumps({'checkpoint': checkpoint})}\n\n"
+                            checkpoint_created = True
 
                         if fn_name in ASYNC_TOOLS:
                             result = await execute_tool_async(fn_name, fn_args, workspace)
@@ -187,11 +226,23 @@ def _agentic_stream(messages: list[dict], turbo: bool, workspace: str, mode: str
                         # Invalidate RAG cache after any file write so next query gets fresh index
                         if fn_name in ("write_file", "edit_file", "multi_edit") and workspace:
                             rag_invalidate(workspace)
+                            round_had_edit = True
 
                         current_messages.append({
                             "role": "tool",
                             "content": result
                         })
+
+                    if mode != "ask" and round_had_edit:
+                        commands = detect_check_commands(workspace)
+                        if commands:
+                            for command in commands:
+                                yield f"data: {json.dumps({'tool_call': 'run_project_checks', 'args': {'command': command}})}\n\n"
+                                result = execute_tool("run_command", {"command": command, "cwd": workspace}, workspace)
+                                yield f"data: {json.dumps({'tool_result': 'run_project_checks', 'result': result[:1000], 'success': 'exit code: 0' in result})}\n\n"
+                                current_messages.append({"role": "tool", "content": f"Project check `{command}`:\n{result}"})
+                                if "exit code: 0" not in result:
+                                    break
 
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
@@ -217,6 +268,14 @@ async def chat(req: ChatRequest):
 
     # RAG: retrieve relevant workspace snippets for the user's message
     rag_context = retrieve(req.message, req.workspace)
+    mention_context = collect_mention_context_sync(req.message, req.workspace)
+    if mention_context:
+        rag_context = (rag_context + "\n\n" + mention_context).strip()
+
+    # Determine model + tool support up front so we build the right system prompt
+    is_cloud = bool(req.provider)
+    local_model = req.local_model or config.MODEL_NAME
+    supports_tools = is_cloud or (local_model in TOOL_CAPABLE_MODELS)
 
     messages = build_chat_messages(
         history=history,
@@ -227,18 +286,15 @@ async def chat(req: ChatRequest):
         diagnostics=req.diagnostics,
         git_diff=req.git_diff,
         rag_context=rag_context,
+        no_tools=not supports_tools,
     )
 
     # Cloud provider: stream directly from OpenAI / Anthropic / Gemini.
     if req.provider:
         return StreamingResponse(
-            stream_cloud(req.provider, messages, req.remote_model, req.api_key),
+            stream_cloud(req.provider, messages, req.remote_model, req.api_key, req.base_url, req.thinking),
             media_type="text/event-stream"
         )
-
-    # Local model: use override if provided, else default
-    local_model = req.local_model or config.MODEL_NAME
-    supports_tools = local_model in TOOL_CAPABLE_MODELS
 
     if not supports_tools:
         # Model doesn't support tool calling — use simple stream
@@ -248,9 +304,25 @@ async def chat(req: ChatRequest):
         )
 
     return StreamingResponse(
-        _agentic_stream(messages, req.turbo, req.workspace, req.mode, req.thinking),
+        _agentic_stream(messages, req.turbo, req.workspace, req.mode, req.thinking and local_model in THINKING_CAPABLE_MODELS, model=local_model),
         media_type="text/event-stream"
     )
+
+
+@router.post("/apply-preview")
+async def apply_preview_endpoint(req: ApplyPreviewRequest):
+    checkpoint = create_checkpoint(req.workspace, "before-approved-edit")
+    result = apply_preview(req.preview or {}, req.workspace)
+    if result.get("ok"):
+        rag_invalidate(req.workspace)
+    return JSONResponse({"checkpoint": checkpoint, "result": result})
+
+
+@router.post("/estimate")
+async def estimate(req: EstimateRequest):
+    mention_context = collect_mention_context_sync(req.message, req.workspace)
+    total = estimate_tokens("\n\n".join([req.message or "", req.file_context or "", mention_context or ""]))
+    return JSONResponse({"tokens": total})
 
 
 class CompactRequest(BaseModel):
@@ -285,6 +357,7 @@ class ReviewRequest(BaseModel):
     provider: str = ""
     remote_model: str = ""
     api_key: str = ""
+    base_url: str = ""
     turbo: bool = False
 
 
@@ -322,7 +395,7 @@ async def review(req: ReviewRequest):
 
     if req.provider and req.api_key:
         return StreamingResponse(
-            stream_cloud(req.provider, messages, req.remote_model, req.api_key),
+            stream_cloud(req.provider, messages, req.remote_model, req.api_key, req.base_url),
             media_type="text/event-stream"
         )
     return StreamingResponse(_stream_ollama(messages, req.turbo, timeout=300.0), media_type="text/event-stream")
