@@ -28,6 +28,67 @@ PREVIEW_TOOLS = {"write_file", "edit_file", "multi_edit"}
 
 
 TOOL_CAPABLE_MODELS: set[str] = {"silo-qwen"}  # models that support Ollama tool calling
+
+
+# Detect when the user's message needs tools. Skipping tools for greetings /
+# casual chat / general questions cuts the prompt from ~2500 to ~500 tokens
+# (5x faster first-token latency).
+def _message_needs_tools(message: str, mode: str = "auto") -> bool:
+    msg = (message or "").strip().lower()
+    if not msg:
+        return False
+
+    # Plan mode always needs tools (read_file, search, ask_user)
+    if mode == "plan":
+        return True
+
+    # Mention syntax always needs tools (@file, @folder, @codebase)
+    if "@" in message:
+        return True
+
+    # Very short messages → casual chat
+    if len(msg) < 12:
+        return False
+
+    # Pure greetings / acknowledgements
+    casual_starts = (
+        "hola", "hi ", "hello", "hey ", "thanks", "thank you", "gracias",
+        "ok", "perfect", "perfecto", "cool", "nice", "great", "good",
+        "yes", "no ", "sí", "vale",
+    )
+    if any(msg.startswith(p) for p in casual_starts) and len(msg) < 40:
+        return False
+
+    # General-knowledge questions (no code reference) — skip tools
+    general_starts = (
+        "what is ", "what are ", "what's ", "how does ", "how do ",
+        "qué es ", "que es ", "cómo funciona ", "como funciona ", "por qué ", "porque ",
+        "explain ", "explica ", "tell me ",
+    )
+    if any(msg.startswith(p) for p in general_starts):
+        # …unless it references the user's code/workspace
+        code_refs = (" my ", " mi ", " this ", " esta ", " este ", " current ", " mio ",
+                     ".py", ".ts", ".js", ".tsx", ".jsx", ".md", ".json", ".html",
+                     "this file", "this code", "este archivo", "este código")
+        if not any(ref in msg for ref in code_refs):
+            return False
+
+    # Action verbs → definitely tools
+    action_keywords = (
+        "read ", "write ", "edit ", "create ", "fix ", "add ", "remove ",
+        "delete ", "search ", "find ", "run ", "execute ", "open ",
+        "show me ", "show ", "list ", "check ", "implement", "refactor",
+        "analyze", "review", "build ", "test ", "commit", "push", "scan",
+        "lee ", "escribe ", "crea ", "arregla ", "añade ", "busca ",
+        "encuentra", "ejecuta ", "abre ", "implementa", "refactoriza",
+        "analiza", "revisa", "muéstrame", "muestra", "lista ",
+    )
+    if any(k in msg for k in action_keywords):
+        return True
+
+    # Default: enable tools (be permissive — false positive is just slower, not broken)
+    return True
+
 THINKING_CAPABLE_MODELS: set[str] = {"silo-qwen"}
 
 
@@ -275,7 +336,12 @@ async def chat(req: ChatRequest):
     # Determine model + tool support up front so we build the right system prompt
     is_cloud = bool(req.provider)
     local_model = req.local_model or config.MODEL_NAME
-    supports_tools = is_cloud or (local_model in TOOL_CAPABLE_MODELS)
+    model_supports_tools = is_cloud or (local_model in TOOL_CAPABLE_MODELS)
+
+    # Skip tools entirely when the prompt clearly doesn't need them — 5x speed-up
+    # for greetings, casual chat, and general questions.
+    needs_tools_now = _message_needs_tools(req.message, req.mode)
+    supports_tools = model_supports_tools and needs_tools_now
 
     messages = build_chat_messages(
         history=history,
